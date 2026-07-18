@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcscmblueprint
+*.moved-aside
+
+# Xcode per-user data (keep the shared project, drop personal UI state)
+xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# CocoaPods / Carthage (not used, but ignore if ever added)
+Pods/
+Carthage/Build/
+
+# Secrets / signing (should never be committed)
+*.mobileprovision
+*.p12
+*.cer
