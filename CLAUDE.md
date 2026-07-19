@@ -159,6 +159,16 @@ iClean/                              repo root
                                      the pager.
       DeleteConfirmationView.swift   final gate: counts, size, 30-day safety net
       DeletionResultView.swift       success + where to find Recently Deleted
+    ScanCache/
+      ScanCacheStore.swift           actor over a SQLite file in Application Support (excluded
+                                     from backup). Memoizes blur scores and feature descriptors
+                                     by localIdentifier + modificationDate. **Best-effort: no
+                                     operation throws** — a cache failure degrades to "no
+                                     cache" rather than breaking a scan.
+      ScanCacheVersion.swift         per-table version stamps. Encodes only the parameters that
+                                     change *how a measurement is produced*, never how it is
+                                     interpreted — so re-tuning a threshold costs a re-classify
+                                     rather than a full re-scan.
     Shared/
       Formatting.swift               ICFormat: count / fileSize / duration strings
       DesignSystem/
@@ -176,8 +186,9 @@ iClean/                              repo root
     Assets.xcassets/                 AppIcon (placeholder), AccentColor (adaptive blue)
 ```
 
-**Not yet built:** the scan cache store itself (M7 phases 3–6 — design agreed and recorded
-below under "Scan cache design"; re-scans still recompute every measurement), and the M6 items
+**Not yet built:** the wiring that actually uses the scan cache (M7 phases 4–6 — the store
+exists and is tested, but nothing reads or writes it yet, so re-scans still recompute
+everything), and the M6 items
 listed under "Current status".
 
 ### Architecture conventions
@@ -488,6 +499,12 @@ after each scan.
   places**, and **blur (which shares the library and scan plumbing but not the distance code)
   did not shift** — median 1388 → 1390, `≤100` 3.7% → 3.5%, same distribution shape. Together
   with the bit-exact verification against Vision, the L2 swap and revision pin are clean.
+  **Confirmed by the user (2026-07-19): they did delete duplicates during the M4 review.**
+- **M7 phase 3 — cache store: DONE, harness-tested. Not yet wired in.**
+  `ScanCacheStore` (SQLite) + `ScanCacheVersion`, plus `FeatureDescriptor.halfPrecisionData`.
+  Nothing reads or writes the cache yet — that is phases 4 and 5 — so scan behaviour is
+  unchanged and this phase cannot have regressed anything. Measured at 13.5k photos:
+  **24.6 MB on disk, 0.02s to read every descriptor back** against 87s to recompute them.
 
 ---
 
@@ -503,7 +520,14 @@ when nothing changed. The fix is to memoize the two expensive per-photo *measure
 | Feature print, revision 2 | 768 × Float32 = 3,072 B |
 | `computeDistance` | exactly L2 over the descriptor — verified bit-exact |
 | Descriptors are already fp16 | 100% of elements round-trip through `Float16` losslessly |
-| Cache projection @ 13.5k photos | **~21 MB** prints (fp16) + **<1 MB** blur scores |
+| Cache on disk @ 13.5k photos | **24.6 MB measured** (1,815 B/photo, 8 KB pages) |
+
+⚠️ The early estimate of "~21 MB" counted only raw descriptor bytes (13,530 × 1,536 = 20.8 MB)
+and ignored storage overhead. **Measured** with realistic 43-char identifiers it is 24.6 MB:
+raw descriptors, plus the blur table (~0.9 MB) and two TEXT primary-key indexes (~1.5 MB).
+Page size is set to 8 KB for this — at the 4 KB default a ~1,600-byte row packs two per page
+and wastes 22% of every page, giving 30.1 MB. 16 KB pages were also measured and gain only a
+further 0.1 MB, so 8 KB is the floor short of an integer-key redesign.
 
 **Principles.**
 - **Cache the measurement, not the verdict.** Store raw blur scores and raw descriptors, never
@@ -521,6 +545,24 @@ when nothing changed. The fix is to memoize the two expensive per-photo *measure
 `isExcludedFromBackup = true` — a regenerable cache must never eat the user's iCloud backup,
 least of all in this app. Tables: `meta(key,value)`, `blur(local_id PK, modified, score)`,
 `print(local_id PK, modified, vec)`.
+
+**Measured throughput** at 13,530 photos (`ScanCacheStore`, macOS harness):
+
+| Operation | Time |
+|---|---|
+| Write all descriptors | 0.25s |
+| **Read all descriptors** | **0.02s** |
+| Read all blur scores | <0.01s |
+| Prune (nothing stale) | <0.01s |
+
+Reading back what costs 87s to fingerprint takes 20ms, so the cache is essentially free at
+read time and the win is the full pass cost.
+
+⚠️ **Every `ScanCacheStore` operation is best-effort and never throws.** A cache failure must
+degrade to "no cache", never break a scan — verified: an unwritable directory yields empty
+reads and no-op writes rather than an error. The corollary is that a bug here looks like "the
+cache never works", not a crash, which is why the store has a standalone test harness rather
+than being trusted because it compiles.
 
 **Invalidation.** Key on `localIdentifier` + `modificationDate`. Version-stamp blur on
 `blurAnalysisDimension`/`blurTileSize`/`blurTilePercentile`, prints on
@@ -546,9 +588,25 @@ the 149s and the 4,974 failed loads are comparatively cheap. **Not yet decompose
 per-outcome timing before assuming how much of the blur pass a cache actually recovers, since
 failed loads are re-attempted every scan by design (see "cache successes only").
 
-**Phases.** 1 ✅ pin revision + `FeatureDescriptor` · 2 ✅ blur timing · 3 cache store
+**Phases.** 1 ✅ pin revision + `FeatureDescriptor` · 2 ✅ blur timing · 3 ✅ cache store
 (SQLite, versioning, pruning, backup exclusion) · 4 wire blur scores · 5 wire descriptors
 · 6 storage visibility + "Clear cached scan data".
+
+**Testing the store.** There is no test target in this project, so `ScanCacheStore` is
+exercised by compiling it into a standalone macOS harness alongside `FeatureDescriptor`,
+`ScanCacheVersion` and `DetectionThresholds`:
+
+```bash
+swiftc -O main.swift \
+  iClean/ScanCache/ScanCacheStore.swift iClean/ScanCache/ScanCacheVersion.swift \
+  iClean/DetectionEngine/FeatureDescriptor.swift \
+  iClean/DetectionEngine/DetectionThresholds.swift -o cachetest && ./cachetest
+```
+
+Covered: empty-store misses, blur and descriptor round-trips, staleness by modification date,
+fp16 losslessness end-to-end (values *and* distance identical), persistence across reopen,
+prune, per-table version invalidation, page size, clear, and graceful degradation on an
+unwritable directory. Re-run it after any change to the store.
 
 **Re-scan UX: transparent.** No new screens or concepts — the scan simply finishes faster.
 
