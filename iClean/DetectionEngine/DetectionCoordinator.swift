@@ -200,6 +200,12 @@ actor DetectionCoordinator {
 
         var pass = SharpnessPass()
         var processed = 0
+        #if DEBUG
+        // Matches the fingerprinting heartbeat, so the two passes can be compared directly.
+        // Without it there is no way to know which pass a scan actually spends its time in —
+        // and that decides where caching is worth the storage it costs.
+        let startedAt = Date()
+        #endif
 
         try await withThrowingTaskGroup(of: BlurDetector.Outcome.self) { group in
             var next = photos.makeIterator()
@@ -240,6 +246,14 @@ actor DetectionCoordinator {
                 if processed % DetectionThresholds.blurProgressInterval == 0 || processed == total {
                     onProgress(progress(processed))
                 }
+                #if DEBUG
+                if processed % 250 == 0 || processed == total {
+                    let elapsed = Date().timeIntervalSince(startedAt)
+                    let rate = elapsed > 0 ? Double(processed) / elapsed : 0
+                    print(String(format: "[iClean] blur pass %d/%d · %.0fs elapsed · %.1f/sec",
+                                 processed, total, elapsed, rate))
+                }
+                #endif
 
                 // Top the window back up.
                 if let asset = next.next() {

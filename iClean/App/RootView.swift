@@ -12,7 +12,7 @@ struct RootView: View {
     var body: some View {
         content
             .animation(.default, value: appState.stage)
-            .onChange(of: scenePhase) { newPhase in
+            .onChange(of: scenePhase) { _, newPhase in
                 // The user may grant/revoke access in Settings and return; re-check.
                 if newPhase == .active {
                     appState.refreshAuthorizationStatus()

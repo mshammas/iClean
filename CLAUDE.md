@@ -35,7 +35,14 @@ iClean is a native iOS app, not a script or web service.
 ## Confirmed product decisions
 
 - **Stack:** Swift / SwiftUI, MVVM. Single app target.
-- **Minimum iOS:** 16.0. (`IPHONEOS_DEPLOYMENT_TARGET = 16.0`.)
+- **Minimum iOS:** 17.0. (`IPHONEOS_DEPLOYMENT_TARGET = 17.0`.)
+  Raised from 16.0 on 2026-07-19, forced by duplicate detection: Vision feature-print
+  **revision 2 requires iOS 17**, and every calibrated duplicate threshold was measured on it.
+  On iOS 16 the app silently fell back to revision 1, whose distances are ~74× larger — so a
+  0.15 threshold matched essentially nothing and duplicate detection quietly did nothing at
+  all. See `DetectionThresholds.visionFeaturePrintRevision`. The alternative was re-running the
+  whole calibration on a second scale for the app's highest-stakes feature; the devices this
+  drops are iPhone X and older (2017).
 - **Device family:** iPhone only (`TARGETED_DEVICE_FAMILY = 1`), portrait only.
 - **Detects four categories:** duplicates/near-duplicates, blurry photos, screenshots, large videos.
 - **Deletion UX:** review list grouped by category → one prominent
@@ -101,6 +108,12 @@ iClean/                              repo root
                                      shots, iCloud-only, and undersized deliveries
         DuplicateDetector.swift      Vision feature prints → aspect/time pre-filter →
                                      union-find → keeper verification; the only pre-ticking one
+      FeatureDescriptor.swift        a Vision feature print as plain `[Float]`, plus the L2
+                                     `distance(to:)`. Exists because a
+                                     `VNFeaturePrintObservation` cannot be rebuilt from bytes
+                                     (no public initialiser), so anything cached or passed
+                                     around must be the raw descriptor. Verified bit-exact
+                                     against Vision's own `computeDistance`.
       DuplicateGroup.swift           keeper + extras + why that copy was kept
     DeletionManager/
       DeletionManager.swift          re-fetch by ID, then one PHPhotoLibrary change block
@@ -163,8 +176,8 @@ iClean/                              repo root
     Assets.xcassets/                 AppIcon (placeholder), AccentColor (adaptive blue)
 ```
 
-**Not yet built:** the on-disk feature-print cache keyed by `localIdentifier` +
-`modificationDate` (re-scans currently recompute every fingerprint), and the remaining M6 items
+**Not yet built:** the scan cache store itself (M7 phases 3–6 — design agreed and recorded
+below under "Scan cache design"; re-scans still recompute every measurement), and the M6 items
 listed under "Current status".
 
 ### Architecture conventions
@@ -289,7 +302,9 @@ after each scan.
   Blur analysis runs with **`isNetworkAccessAllowed = false`**: scanning touches every photo,
   and these users often run "Optimise iPhone Storage", so downloads here could pull gigabytes.
   iCloud-only photos are skipped instead.
-- **Duplicates** — `VNGenerateImageFeaturePrintRequest` + `computeDistance`, grouped at
+- **Duplicates** — `VNGenerateImageFeaturePrintRequest` at a **pinned revision 2**, compared
+  with `FeatureDescriptor.distance(to:)` (plain L2, verified bit-exact against Vision's
+  `computeDistance` — see that file for why we don't call Vision's version). Grouped at
   **≤ 0.15**, but only **pre-ticked at ≤ 0.05** (`duplicateAutoTickMaxDistance`).
   Calibrated by measurement: near-duplicates score 0.00–0.19 (identical 0.0, re-encoded 0.006,
   resized 0.014, cropped-90% 0.126, rotated-2° 0.163) while unrelated photos bottom out at
@@ -301,8 +316,8 @@ after each scan.
   linkage would chain A≈B≈C into one group without A≈C, which could pre-tick a genuinely
   different photo. Keeper priority: `isFavorite` → resolution → file size → oldest.
   **Favourites are never pre-ticked**, even as extras (`Candidate.preselect`).
-  *Not yet implemented:* on-disk feature-print cache keyed by `localIdentifier` +
-  `modificationDate` (re-scans currently recompute everything).
+  *Not yet implemented:* the descriptor cache (M7 phases 3–6) — re-scans still recompute every
+  fingerprint. Design is agreed and recorded under "Scan cache design".
 - **Scanning** — enumerate `PHFetchResult` lazily in batches on a background actor; request only
   **downscaled** images for analysis (never full-res); run cheap passes first; stream progress;
   fully cancellable. Watch for **Limited access** (subset only) and **iCloud-not-downloaded**
@@ -454,8 +469,65 @@ after each scan.
     just disabled. It now says why (with different wording under Limited Access).
   - **Still outstanding:** re-scan-after-deletion edge cases, and iCloud-not-downloaded handling
     beyond the existing opt-in.
+- **M7 — Scan cache: phase 1 of 6 DONE, compile-verified. NOT yet device-verified.**
+  Goal: a re-scan shouldn't recompute what hasn't changed (13.5k fingerprints, 66s, every time).
+  **Phase 1 deliberately ships alone**, because it is the only phase that can change detection
+  results — so if group counts move, there is exactly one possible cause.
+  - Pinned the Vision revision (fixing the iOS 16 bug described under Minimum iOS).
+  - Replaced `VNFeaturePrintObservation` with `FeatureDescriptor` (`[Float]` + L2). Required for
+    caching at all, since an observation can't be reconstructed from bytes.
+  - Added a blur-pass timing heartbeat (`#if DEBUG`) matching the fingerprinting one.
+  ⚠️ **Next device run must confirm the duplicate baseline is unchanged:** 241 groups,
+  262 extras, median distance 0.067, max 0.1498 on the 17,116-item library. A shift means the
+  L2 swap or the revision pin changed behaviour, and that must be understood before phase 3.
+  The same run gives the first blur-pass timing, which decides how phases 4/5 are prioritised.
 
 ---
+
+## Scan cache design (M7) — agreed plan
+
+A re-scan currently redoes everything: ~13.5k fingerprints (66s) plus the whole blur pass, even
+when nothing changed. The fix is to memoize the two expensive per-photo *measurements*.
+
+**Measured facts** (don't re-derive these; they were established by experiment on 2026-07-19):
+
+| Fact | Value |
+|---|---|
+| Feature print, revision 2 | 768 × Float32 = 3,072 B |
+| `computeDistance` | exactly L2 over the descriptor — verified bit-exact |
+| Descriptors are already fp16 | 100% of elements round-trip through `Float16` losslessly |
+| Cache projection @ 13.5k photos | **~21 MB** prints (fp16) + **<1 MB** blur scores |
+
+**Principles.**
+- **Cache the measurement, not the verdict.** Store raw blur scores and raw descriptors, never
+  "is blurry" / "is a duplicate". Re-tuning `blurVariance` or `duplicateAutoTickMaxDistance`
+  then costs a re-classify rather than a full re-scan — which matters while the 0.05 question
+  is still open.
+- **Cache successes only.** Never persist `couldNotLoad` / `deliveredTooSmall`. That set is
+  volatile — it is the *resolution-availability* limit (256px available for all 13,551 photos,
+  800px missing for 4,995), and iOS moves originals in and out as storage pressure changes.
+  Caching a failure would permanently blind the app to a photo that later becomes checkable.
+- **Store fp16.** Lossless here, and it halves the cache. Guard it with a debug assertion that
+  the round-trip is exact, falling back to Float32 if it ever isn't.
+
+**Storage.** SQLite via the raw `sqlite3` C API (no dependency), in Application Support with
+`isExcludedFromBackup = true` — a regenerable cache must never eat the user's iCloud backup,
+least of all in this app. Tables: `meta(key,value)`, `blur(local_id PK, modified, score)`,
+`print(local_id PK, modified, vec)`.
+
+**Invalidation.** Key on `localIdentifier` + `modificationDate`. Version-stamp blur on
+`blurAnalysisDimension`/`blurTileSize`/`blurTilePercentile`, prints on
+`duplicateAnalysisDimension`/`visionFeaturePrintRevision`/precision. A mismatch drops only the
+affected table. Prune rows whose identifiers have left the library.
+Note `modificationDate` also changes on non-pixel edits (favouriting) → needless recompute:
+wasteful, never stale, which is the safe direction. After a device restore `localIdentifier`
+can change wholesale → total miss, self-healing via prune.
+
+**Phases.** 1 ✅ pin revision + `FeatureDescriptor` · 2 ✅ blur timing · 3 cache store
+(SQLite, versioning, pruning, backup exclusion) · 4 wire blur scores · 5 wire descriptors
+· 6 storage visibility + "Clear cached scan data".
+
+**Re-scan UX: transparent.** No new screens or concepts — the scan simply finishes faster.
 
 ## Where to pick up
 
@@ -464,25 +536,30 @@ In rough priority order:
 Everything at the top of this list is a **device check** — the code below it is written but
 unexercised, and stacking more on top of unverified UI is the pattern to avoid here.
 
-1. **Verify the review screens at a large text size on device** (Settings → Display & Brightness
+1. **Re-run a scan on device and check the duplicate baseline is unchanged** — 241 groups,
+   262 extras, median distance 0.067, max 0.1498. This validates M7 phase 1 (the revision pin
+   and the L2 swap), and must be confirmed before any caching is built on top. The same run
+   prints the first blur-pass timing, which decides where caching pays off.
+2. **Verify the review screens at a large text size on device** (Settings → Display & Brightness
    → Text Size, or Accessibility → Larger Text for the AX range). The M5 pass is verified in the
    simulator only for Onboarding and the Permission Primer; `CandidateRow`, the summary category
    cards and the duplicate group cards sit behind photo authorization, which the simulator
    cannot grant. Check the tick boxes are still reachable and rows still read as rows.
-2. **Verify the reworked full-screen viewer** — photo fully visible between the bars, swiping
+3. **Verify the reworked full-screen viewer** — photo fully visible between the bars, swiping
    feels smooth, and the two buttons read distinctly.
-3. **Verify the new M6 states** — empty category after deleting everything in it, and the
+4. **Verify the new M6 states** — empty category after deleting everything in it, and the
    Limited Access wording (share only a few photos with iClean, then scan).
-4. **The iCloud opt-in ("Check Those Too") has never been run.** Needs a Wi-Fi test, and a check
+5. **The iCloud opt-in ("Check Those Too") has never been run.** Needs a Wi-Fi test, and a check
    that Stop still responds mid-download.
-5. **Finish M6** — re-scan-after-deletion edge cases.
-6. **Ask about the 0.05–0.15 duplicate band** while in the duplicates screen: are those genuine
+6. **Continue M7** — phases 3–6 of the scan cache (see "Scan cache design" above). Gated on
+   item 1: don't build caching on top of an unverified duplicate baseline.
+7. **Finish M6** — re-scan-after-deletion edge cases.
+8. **Ask about the 0.05–0.15 duplicate band** while in the duplicates screen: are those genuine
    duplicates or distinct shots? That answer decides whether `duplicateAutoTickMaxDistance`
    should rise above 0.05.
-7. *Optional:* merge the blur and duplicate passes into a single image load (~45% less pixel
+9. *Optional:* merge the blur and duplicate passes into a single image load (~45% less pixel
    work). Deliberately not done — scan time is currently acceptable (~66s of fingerprinting on a
    17k library) and it isn't worth destabilising the highest-stakes code for speed.
-8. *Optional:* the on-disk feature-print cache, so re-scans don't recompute every fingerprint.
 
 ## Repository
 

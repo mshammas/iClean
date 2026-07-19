@@ -1,9 +1,33 @@
 import Foundation
+import Vision
 
 /// All tunable detection constants live here so they're easy to find and adjust after
 /// testing against real libraries. Thresholds lean **conservative**: we would much rather
 /// miss some clutter than suggest deleting something the user wanted.
 enum DetectionThresholds {
+
+    // MARK: Vision
+
+    /// The feature-print revision, **pinned deliberately**.
+    ///
+    /// `VNGenerateImageFeaturePrintRequest` otherwise takes whatever the OS considers current,
+    /// and the revisions are not interchangeable — they produce different-length descriptors on
+    /// wildly different distance scales. Measured on the same image pair:
+    ///
+    ///     revision   elements   near-duplicate   unrelated
+    ///        1         2048         0.8523         6.0805
+    ///        2          768         0.0115         0.0982   ← calibrated against this
+    ///
+    /// Every threshold below was measured on revision 2. Left unpinned, an iOS 16 device would
+    /// silently use revision 1, where a near-duplicate scores ~0.85 against a 0.15 threshold —
+    /// so duplicate detection would find essentially nothing and never say so. (That was the
+    /// real behaviour before this was pinned; it is why the project's minimum is now iOS 17,
+    /// the first release with revision 2.)
+    ///
+    /// ⚠️ Changing this invalidates every calibrated duplicate constant **and** any cached
+    /// descriptors — `computeDistance` throws across revisions rather than returning nonsense,
+    /// and `FeatureDescriptor.distance(to:)` returns `nil` for the same reason.
+    static let visionFeaturePrintRevision = VNGenerateImageFeaturePrintRequestRevision2
 
     // MARK: Large videos
 

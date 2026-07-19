@@ -18,7 +18,7 @@ enum DuplicateDetector {
     /// One photo, fingerprinted and ready to compare.
     private struct Fingerprint {
         let asset: PHAsset
-        let print: VNFeaturePrintObservation
+        let descriptor: FeatureDescriptor
         let creationDate: Date
         let aspectRatio: Double
         let pixelCount: Int
@@ -123,14 +123,17 @@ enum DuplicateDetector {
                                                    qos: .userInitiated,
                                                    attributes: .concurrent)
 
-    private static func featurePrint(for cgImage: CGImage) async -> VNFeaturePrintObservation? {
+    private static func featurePrint(for cgImage: CGImage) async -> FeatureDescriptor? {
         await withCheckedContinuation { continuation in
             visionQueue.async {
                 let request = VNGenerateImageFeaturePrintRequest()
+                // Never leave this to the OS default — see `visionFeaturePrintRevision`.
+                request.revision = DetectionThresholds.visionFeaturePrintRevision
                 let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
                 do {
                     try handler.perform([request])
-                    continuation.resume(returning: request.results?.first as? VNFeaturePrintObservation)
+                    let observation = request.results?.first as? VNFeaturePrintObservation
+                    continuation.resume(returning: observation.flatMap(FeatureDescriptor.init))
                 } catch {
                     continuation.resume(returning: nil)
                 }
@@ -146,11 +149,11 @@ enum DuplicateDetector {
             allowsNetworkAccess: allowsICloudDownload
         ), let cgImage = image.cgImage else { return nil }
 
-        guard let observation = await featurePrint(for: cgImage) else { return nil }
+        guard let descriptor = await featurePrint(for: cgImage) else { return nil }
 
         let height = max(asset.pixelHeight, 1)
         return Fingerprint(asset: asset,
-                           print: observation,
+                           descriptor: descriptor,
                            creationDate: asset.creationDate ?? .distantPast,
                            aspectRatio: Double(asset.pixelWidth) / Double(height),
                            pixelCount: asset.pixelWidth * asset.pixelHeight,
@@ -204,7 +207,7 @@ enum DuplicateDetector {
 
                 if abs(a.aspectRatio - b.aspectRatio) <= DetectionThresholds.duplicateAspectTolerance {
                     compared += 1
-                    if let distance = distance(a.print, b.print),
+                    if let distance = a.descriptor.distance(to: b.descriptor),
                        distance <= DetectionThresholds.duplicateMaxDistance {
                         union.union(i, j)
                         matchDistances.append(distance)
@@ -221,17 +224,6 @@ enum DuplicateDetector {
             buckets[union.find(index), default: []].append(sorted[index])
         }
         return buckets.values.filter { $0.count > 1 }
-    }
-
-    private static func distance(_ a: VNFeaturePrintObservation,
-                                 _ b: VNFeaturePrintObservation) -> Float? {
-        var value = Float(0)
-        do {
-            try a.computeDistance(&value, to: b)
-            return value
-        } catch {
-            return nil
-        }
     }
 
     /// Chooses which copy to keep and builds the group.
@@ -262,7 +254,7 @@ enum DuplicateDetector {
         // Keep each member's distance to the keeper: it decides both the wording and, more
         // importantly, whether we dare pre-tick it.
         let verified: [(member: Fingerprint, distance: Float)] = ranked.dropFirst().compactMap { member in
-            guard let distance = distance(keeper.print, member.print),
+            guard let distance = keeper.descriptor.distance(to: member.descriptor),
                   distance <= DetectionThresholds.duplicateMaxDistance else { return nil }
             return (member, distance)
         }
