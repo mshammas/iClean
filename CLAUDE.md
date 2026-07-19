@@ -78,6 +78,12 @@ iClean/                              repo root
   Tools/ScanCacheHarness/            standalone macOS test harness for the scan cache
                                      (run.sh). OUTSIDE iClean/ on purpose — the synchronized
                                      group would otherwise compile it into the app.
+  Tools/AppIcon/make_icon.py         draws the app icon (Pillow, no dependencies beyond it)
+                                     and writes icon-1024.png. The icon is *source*, not an
+                                     opaque binary: change a colour or the layout here and
+                                     re-run, then copy the PNG into AppIcon.appiconset.
+                                     Drawn at 4x and downsampled — Pillow's shapes are
+                                     aliased, so supersampling is what keeps edges clean.
 
   iClean/                            all source (synchronized into the target)
     iCleanApp.swift                  @main entry
@@ -191,7 +197,8 @@ iClean/                              repo root
           ICButton.swift             large full-width button (primary/secondary/destructive)
           ICInfoRow.swift            icon + title + detail explanatory row
           ICScreen.swift             standard scaffold: scroll content + pinned footer
-    Assets.xcassets/                 AppIcon (placeholder), AccentColor (adaptive blue)
+    Assets.xcassets/                 AppIcon (1024px, generated — see Tools/AppIcon),
+                                     AccentColor (adaptive blue)
 ```
 
 **Not yet built:** the user-facing cache controls (M7 phase 6 — storage visibility and "Clear
