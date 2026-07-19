@@ -40,9 +40,17 @@ iClean is a native iOS app, not a script or web service.
 - **Detects four categories:** duplicates/near-duplicates, blurry photos, screenshots, large videos.
 - **Deletion UX:** review list grouped by category → one prominent
   "Delete N items, free ~X GB" confirm button → single batch delete.
-- **Default checked-for-deletion state:** ONLY the non-"best" copies inside duplicate groups are
-  pre-checked. Blurry / Screenshots / Large Videos start **unchecked** (opt-in). This is the safe
+  **Duplicates additionally allow per-group deletion** ("Delete N now", behind a confirm alert),
+  so a long review can be done in sittings instead of held in mind until the end. Note iOS shows
+  its *own* system confirmation for every delete call, so per-group means more system prompts.
+- **Default checked-for-deletion state:** only duplicate copies that are **near-certain**
+  (feature-print distance ≤ `duplicateAutoTickMaxDistance` = 0.05) are pre-checked. Looser
+  matches (0.05–0.15) are grouped and shown but start **unchecked**, and **favourites are never
+  pre-checked**. Blurry / Screenshots / Large Videos are entirely opt-in. This is the safe
   default — deleting a wanted photo is the worst possible failure, so we bias against it.
+- **Every duplicate group always keeps at least one copy.** The keeper is never a deletion
+  candidate and has no tick box. The user can change *which* copy is kept ("Keep This One
+  Instead"), which moves that protection rather than removing it.
 - **Safety net:** iOS's built-in **Recently Deleted (30-day)** album. We do **NOT** build an
   in-app trash/undo — Recently Deleted is the backstop, and the UI copy says so plainly.
 - **Privacy:** all analysis is on-device. Nothing is uploaded. Say this in user-facing copy.
@@ -78,7 +86,8 @@ iClean/                              repo root
                                      images (capped at 2400px), and video player items
       AssetThumbnailView.swift       square async thumbnail w/ video-duration badge
       AssetResourceInfo.swift        file size via PHAssetResource KVC + safe fallback estimate
-      ScanProgress.swift             Sendable scan progress (scanned/total, status text)
+      ScanProgress.swift             Sendable progress: phase (1 of 3…), scanned/total, optional
+                                     sub-step `detail`, and an iCloud-scan flag
     DetectionEngine/
       Candidate.swift                CleanupCategory (+ user-facing copy) and Candidate model
       ScanResults.swift              scan output: per-category lookup, totals, default ticks
@@ -98,7 +107,12 @@ iClean/                              repo root
       DeletionResult.swift           result + DeletionError with plain-language copy
     ReviewUI/
       CleanupFlowView.swift          owns NavigationStack + CleanupRoute + scan task + alerts
-      CleanupViewModel.swift         scan lifecycle, selection, deletion; single alert channel
+      CleanupViewModel.swift         scan lifecycle, selection, deletion; single alert channel.
+                                     All deletion funnels through one private `delete(ids:)`,
+                                     which records `deletedIDs` so already-deleted items vanish
+                                     from every derived list (categories, groups, totals) —
+                                     deleting mid-review must never leave rows pointing at
+                                     photos that are gone.
       ReviewSelection.swift          value-type selection set keyed by localIdentifier
       HomeView.swift                 home: library counts + recent preview grid + Scan button
       HomeViewModel.swift            loads summary + recent assets for Home
@@ -106,10 +120,30 @@ iClean/                              repo root
       ScanSummaryView.swift          category cards + the single Delete button
       CategoryReviewView.swift       per-category checklist + Tick All (LazyVStack — a category
                                      can hold thousands of rows; eager building swamps PhotoKit)
-      DuplicateReviewView.swift      grouped review; leads with the keeper (no tick box on it)
+      DuplicateReviewView.swift      grouped review; leads with the keeper (no tick box on it).
+                                     Which copy is kept is only a suggestion — "Keep This One
+                                     Instead" in the viewer swaps it (`CleanupViewModel
+                                     .makeKeeper`, tracked in `keeperOverrides`). The current
+                                     keeper is never a deletion candidate, so **every group
+                                     always keeps at least one copy** whatever the user ticks.
+                                     Each group also has its own "Delete N now" (behind a
+                                     confirm alert) so a long review can be done in pieces
+                                     instead of one final batch.
       CandidateRow.swift             thumbnail (→ full screen) + reason + big tick box
-      FullScreenAssetView.swift      full-screen viewer: pinch/double-tap zoom, video playback,
-                                     tick control; opened by tapping a row's thumbnail
+      FullScreenAssetView.swift      full-screen viewer: pinch/double-tap zoom, video playback.
+                                     Takes a `FullScreenSelection` (list + start id) and pages
+                                     between items. In Duplicates, tapping any photo opens the
+                                     **whole group** — keeper first, then copies — so the two
+                                     can be swiped between and compared before confirming the
+                                     deletion. A `FullScreenTarget` is either a deletion
+                                     candidate (tick control) or the keeper (read-only).
+                                     Laid out as a **column** (top bar / pager / bottom bar),
+                                     never a ZStack — floating controls covered the photo the
+                                     user was trying to judge. Each page shows the cached
+                                     thumbnail instantly, then swaps in the full image, so a
+                                     swipe never lands on a blank screen. Pan is high-priority
+                                     only while zoomed, so at normal zoom the swipe reaches
+                                     the pager.
       DeleteConfirmationView.swift   final gate: counts, size, 30-day safety net
       DeletionResultView.swift       success + where to find Recently Deleted
     Shared/
@@ -124,9 +158,9 @@ iClean/                              repo root
     Assets.xcassets/                 AppIcon (placeholder), AccentColor (adaptive blue)
 ```
 
-**Still to come (later milestones):** `Strategies/BlurDetector.swift` (M3);
-`Strategies/DuplicateDetector.swift`, `DuplicateGroup.swift`, `DuplicateGroupView.swift`,
-and the on-disk feature-print cache (M4).
+**Not yet built:** the on-disk feature-print cache keyed by `localIdentifier` +
+`modificationDate` (re-scans currently recompute every fingerprint), and the M5/M6 work listed
+under "Current status".
 
 ### Architecture conventions
 - One `@MainActor ObservableObject` ViewModel per screen (screens create their own).
@@ -198,7 +232,13 @@ to skip onboarding (writing the plist from the host does *not* work — cfprefsd
 
 ---
 
-## Detection approach (reference for upcoming milestones)
+## Detection approach (all four implemented)
+
+Every threshold below was set by **measurement, not guesswork** — and two of them were wrong
+until real-device data corrected them. Re-tune the same way: the `#if DEBUG` block in
+`DetectionCoordinator` prints coverage, a blur-score histogram and a match-distance histogram
+after each scan.
+
 
 - **Screenshots** — metadata only: `asset.mediaSubtypes.contains(.photoScreenshot)`.
 - **Large videos** — `mediaType == .video`; size via `PHAssetResource` `fileSize` (verify API;
@@ -213,13 +253,18 @@ to skip onboarding (writing the plist from the host does *not* work — cfprefsd
   blurred background deserves a guarantee, not a statistical margin.
   That dimension was chosen by measurement (see `DetectionThresholds.blurAnalysisDimension`):
   downscaling destroys blur, so at 400px sharp-vs-blurry separated only 6.8×, while 800px
-  separates 48.5× at far less decode cost than 1200/1600px. Sharp photos measured 400–5300,
-  clearly blurry ones 2–8, so the threshold sits at 25. Known false-positive mode: genuinely
-  low-detail photos (clear sky, blank wall, very dark) — which is why blurry is never pre-ticked.
+  separates 48.5× at far less decode cost than 1200/1600px.
+  **Threshold is `blurVariance = 100`**, set from a real 17k-photo distribution (median 1390;
+  ≤100 covers 3.7% of photos). An earlier value of 25, derived from *synthetic* Gaussian blur,
+  was far too strict — it found 12 blurry photos in 17,000. Real blur scores higher because
+  sensor noise and compression keep some high-frequency detail alive.
+  Known false-positive mode: genuinely low-detail photos (clear sky, blank wall, very dark) —
+  which is why blurry is never pre-ticked.
   Blur analysis runs with **`isNetworkAccessAllowed = false`**: scanning touches every photo,
   and these users often run "Optimise iPhone Storage", so downloads here could pull gigabytes.
   iCloud-only photos are skipped instead.
-- **Duplicates** — `VNGenerateImageFeaturePrintRequest` + `computeDistance` at **≤ 0.15**.
+- **Duplicates** — `VNGenerateImageFeaturePrintRequest` + `computeDistance`, grouped at
+  **≤ 0.15**, but only **pre-ticked at ≤ 0.05** (`duplicateAutoTickMaxDistance`).
   Calibrated by measurement: near-duplicates score 0.00–0.19 (identical 0.0, re-encoded 0.006,
   resized 0.014, cropped-90% 0.126, rotated-2° 0.163) while unrelated photos bottom out at
   **0.4163** — and a brightness-edited copy scores 0.433, i.e. the ranges *overlap* near 0.4.
@@ -245,25 +290,33 @@ to skip onboarding (writing the plist from the host does *not* work — cfprefsd
   on Xcode 26.6; app launches in the simulator, Onboarding and Permission Primer render correctly
   and stage routing works. Xcode project, folder structure, Info.plist keys, design system,
   onboarding, and the full permission flow (primer / denied / limited) are in place.
-- **M1 — Enumeration + Home skeleton: DONE, compile-verified.**
+- **M1 — Enumeration + Home skeleton: DONE, device-verified.**
   `PhotoLibraryFetcher` counts the library off-main; Home shows total/photos/videos and a recent
-  preview grid via `PhotoImageService` + `AssetThumbnailView`. The "Scan My Photos" button exists
-  but currently shows a "coming soon" alert — real detection lands in M2.
-  **Home screen not yet visually verified** — reaching it needs a real photo-permission grant
-  (see simulator limitations above). Verify on the physical iPhone.
+  preview grid via `PhotoImageService` + `AssetThumbnailView`. "Scan My Photos" runs the real
+  scan. Home re-reads its counts whenever a deletion happens, keyed on
+  `CleanupViewModel.completedDeletions`.
 - **M2 — Cheap detectors end-to-end: DONE, compile-verified. NOT yet behaviour-verified.**
   Screenshot + large-video detection, the full review flow (summary → per-category checklist →
   confirm → result), and real `PHPhotoLibrary` batch deletion. Screenshots and large videos start
   **unticked**, per the safety rule. Compiles clean in Debug + Release.
   **Verified on-device by the user (2026-07-19):** scan, review list, sizes, and the unticked
   default all behave correctly.
-- **Full-screen viewer (post-M2 addition, user-requested): DONE, compile-verified only.**
+- **Full-screen viewer (post-M2, user-requested): DONE, device-verified and since reworked.**
   Tapping a row's thumbnail (magnifier badge marks it) opens `FullScreenAssetView`: pinch and
-  double-tap zoom for photos, playback for videos, and a tick control so the decision can be made
-  while looking at the item. Not yet verified on device.
+  double-tap zoom, video playback, and a tick control so the decision is made while looking at
+  the item. Grown through three rounds of device feedback:
+  1. the duplicate **keeper wasn't viewable at all** — it had no button; now tappable;
+  2. **swipe-to-compare** across a whole duplicate group, since judging a duplicate means
+     comparing it against the copy being kept;
+  3. **layout and wording fixes** — controls were floating in a `ZStack` and covering the photo
+     (now a column: top bar / pager / bottom bar), each page showed a blank while loading (now
+     shows the cached thumbnail instantly, then swaps in the full image), and the two buttons
+     read almost identically ("Keep This One" vs "Keep This One Instead" → the toggle is now
+     "Don't Delete This One").
+  ⚠️ The layout/wording round (3) is **compile-verified only** — not yet checked on device.
 - **M3 — Blur detection: DONE, device-verified and calibrated on a real library.**
   `SharpnessAnalyzer` (Laplacian variance) + `BlurDetector` run as a **second scan pass** with
-  bounded concurrency (6 at a time), reporting progress as "Step 2 of 2". The threshold and
+  bounded concurrency (6 at a time), reporting progress as "Step 2 of 3". The threshold and
   analysis dimension were calibrated by running the real pipeline over sharp vs progressively
   blurred photographs (see Detection approach above) rather than guessed.
   Portrait-mode photos are excluded two ways (metadata skip + per-tile scoring).
@@ -294,13 +347,13 @@ to skip onboarding (writing the plist from the host does *not* work — cfprefsd
   prints coverage + a score histogram after each scan — the tool to use for any re-tuning.
   Supporting changes: `CategoryReviewView` uses `LazyVStack`; blurry results sort
   **blurriest-first** via `Candidate.detectionScore`, so debatable calls sit at the list's end.
-- **M4 — Duplicate detection: DONE, compile-verified + threshold calibrated. NOT device-verified.**
+- **M4 — Duplicate detection: DONE. Scan is device-verified; the review UI is not.**
   Feature-print detection, aspect/time pre-filtering, union-find clustering with keeper
   verification, and a grouped review screen. Scanning is now three passes.
-  ⚠️ **This is the only category that pre-ticks items for deletion**, so device verification
-  matters more here than anywhere else: confirm every group really is the same photo, and that
-  no favourite is ever pre-ticked. The `#if DEBUG` block prints group counts and a match-distance
-  histogram — if match distances cluster near 0.15 rather than near 0, tighten the threshold.
+  ⚠️ **This is the only category that pre-ticks items for deletion.** The pre-ticked groups have
+  **not yet been eyeballed on device** — that is the single most important outstanding check:
+  confirm each pre-ticked copy really is the same photo, and that no favourite is pre-ticked.
+  The `#if DEBUG` block prints group counts and a match-distance histogram.
   ⚠️ **Known cost:** the duplicate pass loads every photo again, on top of the blur pass. A
   combined single-load pass would cut the pixel work ~45% if scans feel slow.
   **Device test (2026-07-19) — appeared frozen** on "Step 2 of 3, 11,839 of 11,839". Three
@@ -332,7 +385,45 @@ to skip onboarding (writing the plist from the host does *not* work — cfprefsd
     The difference is the requested size: 256px is available locally for every photo, 800px is
     not. So the blur "coverage gap" is a *resolution availability* limit, not photos being
     absent from the device — worth remembering before attributing it to iCloud alone.
+- **Duplicate review upgrades (post-M4, user-requested): DONE, compile-verified only.**
+  All three came from device feedback and are **not yet device-verified**:
+  - **Swipe-to-compare** — tapping any photo in a group opens the whole group in the viewer.
+  - **Change the keeper** — "Keep This One Instead" (`CleanupViewModel.makeKeeper`, tracked in
+    `keeperOverrides`). The app's pick is a suggestion; the user can move it.
+  - **Per-group delete** — "Delete N now" on each group card, behind a confirm alert, so a long
+    review can be done in pieces. All deletion funnels through one private
+    `CleanupViewModel.delete(ids:)`, which records `deletedIDs`; every derived list filters
+    those out so deleting mid-review can't leave rows pointing at photos that are gone.
 - **M5/M6 — Progress, cancellation, accessibility pass, edge cases:** not started.
+
+---
+
+## Where to pick up
+
+In rough priority order:
+
+1. **Verify the duplicate review on device** — highest value, because it's the only pre-ticking
+   category and its UI has never been exercised. Check pre-ticked copies really are duplicates,
+   that no favourite is pre-ticked, and that the keeper swap and per-group delete behave.
+2. **Verify the reworked full-screen viewer** — photo fully visible between the bars, swiping
+   feels smooth, and the two buttons read distinctly.
+3. **The iCloud opt-in ("Check Those Too") has never been run.** Needs a Wi-Fi test, and a check
+   that Stop still responds mid-download.
+4. **M5/M6** — accessibility pass at the largest Dynamic Type sizes, empty/error states,
+   re-scan edge cases.
+5. *Optional:* merge the blur and duplicate passes into a single image load (~45% less pixel
+   work). Deliberately not done — scan time is currently acceptable (~66s of fingerprinting on a
+   17k library) and it isn't worth destabilising the highest-stakes code for speed.
+6. *Optional:* the on-disk feature-print cache, so re-scans don't recompute every fingerprint.
+
+## Repository
+
+`git@github.com:mshammas/iClean.git`, branch `main`.
+
+⚠️ This machine has **two GitHub accounts**. The remote must use the SSH host alias from
+`~/.ssh/config` — `git@github-mshammas:mshammas/iClean.git` — **not** plain `github.com`, which
+picks the wrong key and fails with "Permission … denied to ichummas".
+Verify with `ssh -T git@github-mshammas` (should greet "Hi mshammas!").
 
 The full milestone plan lives at
 `/Users/shammas/.claude/plans/this-repo-is-for-wondrous-naur.md`.

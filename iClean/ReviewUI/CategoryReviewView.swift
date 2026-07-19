@@ -7,7 +7,7 @@ struct CategoryReviewView: View {
     @ObservedObject var viewModel: CleanupViewModel
 
     /// The item being viewed full screen, if any.
-    @State private var viewingCandidate: Candidate?
+    @State private var viewingSelection: FullScreenSelection?
 
     private var candidates: [Candidate] { viewModel.candidates(in: category) }
     private var allSelected: Bool { viewModel.selection.allSelected(in: candidates) }
@@ -39,7 +39,10 @@ struct CategoryReviewView: View {
                     CandidateRow(candidate: candidate,
                                  isSelected: viewModel.selection.isSelected(candidate.id),
                                  onToggle: { viewModel.toggle(candidate) },
-                                 onViewFullScreen: { viewingCandidate = candidate })
+                                 onViewFullScreen: {
+                                     viewingSelection = FullScreenSelection(
+                                         single: FullScreenTarget(candidate: candidate))
+                                 })
                     if candidate.id != candidates.last?.id {
                         Divider()
                     }
@@ -55,8 +58,8 @@ struct CategoryReviewView: View {
         }
         .navigationTitle(category.title)
         .navigationBarTitleDisplayMode(.inline)
-        .fullScreenCover(item: $viewingCandidate) { candidate in
-            FullScreenAssetView(candidate: candidate, viewModel: viewModel)
+        .fullScreenCover(item: $viewingSelection) { selection in
+            FullScreenAssetView(selection: selection, viewModel: viewModel)
         }
     }
 }

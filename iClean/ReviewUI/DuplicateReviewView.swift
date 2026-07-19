@@ -9,7 +9,9 @@ import SwiftUI
 struct DuplicateReviewView: View {
     @ObservedObject var viewModel: CleanupViewModel
 
-    @State private var viewingCandidate: Candidate?
+    @State private var viewingSelection: FullScreenSelection?
+    /// The group awaiting confirmation for an immediate delete.
+    @State private var groupPendingDeletion: DuplicateGroup?
 
     private var groups: [DuplicateGroup] { viewModel.duplicateGroups }
 
@@ -25,13 +27,26 @@ struct DuplicateReviewView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            LazyVStack(spacing: 20) {
-                ForEach(groups) { group in
-                    groupCard(group)
+            if groups.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 56))
+                        .foregroundStyle(ICColor.success)
+                        .accessibilityHidden(true)
+                    Text("You've been through all the duplicates. One copy of each photo has been kept.")
+                        .icStyle(.body)
+                        .foregroundStyle(ICColor.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                LazyVStack(spacing: 20) {
+                    ForEach(groups) { group in
+                        groupCard(group)
+                    }
                 }
             }
         } footer: {
-            let ticked = viewModel.selection.selectedCount(in: viewModel.candidates(in: .duplicates))
+            let ticked = viewModel.selection.selectedCount(in: groups.flatMap(\.extras))
             Text(ticked == 0
                  ? "Nothing ticked in Duplicates"
                  : "\(ICFormat.count(ticked)) extra copies ticked")
@@ -41,9 +56,30 @@ struct DuplicateReviewView: View {
         }
         .navigationTitle(CleanupCategory.duplicates.title)
         .navigationBarTitleDisplayMode(.inline)
-        .fullScreenCover(item: $viewingCandidate) { candidate in
-            FullScreenAssetView(candidate: candidate, viewModel: viewModel)
+        .fullScreenCover(item: $viewingSelection) { selection in
+            FullScreenAssetView(selection: selection, viewModel: viewModel)
         }
+        .alert("Delete these copies?",
+               isPresented: Binding(get: { groupPendingDeletion != nil },
+                                    set: { if !$0 { groupPendingDeletion = nil } }),
+               presenting: groupPendingDeletion) { group in
+            Button("Cancel", role: .cancel) { groupPendingDeletion = nil }
+            Button("Delete", role: .destructive) {
+                groupPendingDeletion = nil
+                Task { _ = await viewModel.deleteTicked(in: group) }
+            }
+        } message: { group in
+            let ticked = tickedExtras(in: group)
+            let bytes = ticked.reduce(Int64(0)) { $0 + $1.estimatedBytes }
+            Text("\(ICFormat.count(ticked.count)) copies will move to Recently Deleted, freeing about \(ICFormat.fileSize(bytes)). You can get them back from the Photos app for 30 days.\n\nThe copy marked as kept stays on your iPhone.")
+        }
+    }
+
+    /// Opens the viewer on the whole group — keeper first, then its copies — so the user can
+    /// swipe between them and judge the deletion by direct comparison. The viewer rebuilds
+    /// its pages from the group, so changing which copy is kept updates it in place.
+    private func present(_ group: DuplicateGroup, startingAt id: String) {
+        viewingSelection = FullScreenSelection(groupID: group.id, startID: id)
     }
 
     // MARK: Group card
@@ -62,7 +98,19 @@ struct DuplicateReviewView: View {
                 CandidateRow(candidate: extra,
                              isSelected: viewModel.selection.isSelected(extra.id),
                              onToggle: { viewModel.toggle(extra) },
-                             onViewFullScreen: { viewingCandidate = extra })
+                             onViewFullScreen: { present(group, startingAt: extra.id) })
+            }
+
+            // Deal with a group as soon as it's been judged, rather than carrying every
+            // decision to the end of a long review.
+            let ticked = tickedExtras(in: group)
+            if !ticked.isEmpty {
+                ICButton(title: "Delete \(ICFormat.count(ticked.count)) now",
+                         systemImage: "trash",
+                         role: .destructive,
+                         isEnabled: !viewModel.isDeleting) {
+                    groupPendingDeletion = group
+                }
             }
         }
         .padding(16)
@@ -70,32 +118,47 @@ struct DuplicateReviewView: View {
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
+    private func tickedExtras(in group: DuplicateGroup) -> [Candidate] {
+        group.extras.filter { viewModel.selection.isSelected($0.id) }
+    }
+
     /// The copy being kept. Deliberately has no tick box — it is not deletable from here,
-    /// which is the reassurance that matters most on this screen.
+    /// which is the reassurance that matters most on this screen. It *is* tappable though:
+    /// checking a group really is duplicates means looking at the copy being kept, not just
+    /// the ones being deleted.
     private func keeperRow(_ group: DuplicateGroup) -> some View {
-        HStack(spacing: 16) {
-            AssetThumbnailView(asset: group.keeper, side: 64)
-                .overlay(alignment: .topLeading) {
-                    Image(systemName: "checkmark.seal.fill")
-                        .font(.system(size: 16))
+        Button {
+            present(group, startingAt: group.keeper.localIdentifier)
+        } label: {
+            HStack(spacing: 16) {
+                AssetThumbnailView(asset: group.keeper, side: 64)
+                    .overlay(alignment: .topLeading) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(5)
+                            .background(.black.opacity(0.55), in: Circle())
+                            .padding(3)
+                    }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Label(group.keeperReason, systemImage: "checkmark.seal.fill")
+                        .icStyle(.bodyBold)
                         .foregroundStyle(ICColor.success)
-                        .background(Circle().fill(.white).padding(1))
-                        .padding(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(ICFormat.fileSize(group.keeperBytes))
+                        .icStyle(.caption)
+                        .foregroundStyle(ICColor.secondaryText)
                 }
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(group.keeperReason)
-                    .icStyle(.bodyBold)
-                    .foregroundStyle(ICColor.success)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(ICFormat.fileSize(group.keeperBytes))
-                    .icStyle(.caption)
-                    .foregroundStyle(ICColor.secondaryText)
+                Spacer(minLength: 0)
             }
-
-            Spacer(minLength: 0)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(group.keeperReason). \(ICFormat.fileSize(group.keeperBytes)). This one will not be deleted.")
+        .accessibilityHint("Double tap to see it full screen")
+        .accessibilityAddTraits(.isButton)
     }
 }

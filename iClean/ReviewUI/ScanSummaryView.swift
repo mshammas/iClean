@@ -17,11 +17,11 @@ struct ScanSummaryView: View {
         ICScreen {
             header
 
-            if results.isEmpty {
+            if viewModel.populatedCategories.isEmpty {
                 emptyState
                 coverageNote
             } else {
-                ForEach(results.populatedCategories) { category in
+                ForEach(viewModel.populatedCategories) { category in
                     categoryCard(category)
                 }
 
@@ -33,7 +33,7 @@ struct ScanSummaryView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         } footer: {
-            if !results.isEmpty {
+            if !viewModel.populatedCategories.isEmpty {
                 deleteFooter
             }
         }
@@ -45,7 +45,7 @@ struct ScanSummaryView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(results.isEmpty ? "All clean!" : "Here's what we found")
+            Text(viewModel.populatedCategories.isEmpty ? "All clean!" : "Here's what we found")
                 .icStyle(.screenTitle)
                 .foregroundStyle(ICColor.primaryText)
             Text("We checked \(ICFormat.count(results.scannedCount)) items in your library.")

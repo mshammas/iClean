@@ -18,8 +18,6 @@ struct CleanupFlowView: View {
     @StateObject private var viewModel = CleanupViewModel()
     @State private var path: [CleanupRoute] = []
     @State private var scanTask: Task<Void, Never>?
-    /// Bumped after a deletion so Home re-reads the (now smaller) library counts.
-    @State private var libraryRefreshToken = 0
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -44,7 +42,9 @@ struct CleanupFlowView: View {
         } else {
             HomeView(hasLimitedAccess: hasLimitedAccess,
                      onChooseMorePhotos: onChooseMorePhotos,
-                     refreshToken: libraryRefreshToken,
+                     // Driven by the view model so *any* deletion refreshes the counts,
+                     // including the per-group deletes done mid-review.
+                     refreshToken: viewModel.completedDeletions,
                      onScan: { startScan() })
         }
     }
@@ -101,7 +101,6 @@ struct CleanupFlowView: View {
     private func confirmDeletion() {
         Task {
             if let result = await viewModel.performDeletion() {
-                libraryRefreshToken += 1
                 // Replace the stack so there's no going "back" into a stale review list.
                 path = [.result(result)]
             }
