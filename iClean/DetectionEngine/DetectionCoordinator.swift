@@ -84,7 +84,8 @@ actor DetectionCoordinator {
 
         let duplicatePass = try await DuplicateDetector.findGroups(
             in: photosForDuplicates,
-            allowsICloudDownload: includeICloudPhotos
+            allowsICloudDownload: includeICloudPhotos,
+            cache: cache
         ) { processed, stageTotal, detail in
             onProgress(ScanProgress(phase: .duplicates,
                                     scanned: processed,
@@ -131,6 +132,7 @@ actor DetectionCoordinator {
         \(Self.scoreDistribution(sharpnessPass.scores))
           -- duplicates --
           fingerprinted ............ \(duplicatePass.fingerprinted)
+          reused from cache ........ \(duplicatePass.reusedFromCache)
           could not fingerprint .... \(duplicatePass.couldNotLoad)
           groups found ............. \(duplicatePass.groups.count)
           extra copies total ....... \(duplicatePass.groups.flatMap(\.extras).count)

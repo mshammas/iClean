@@ -30,15 +30,28 @@ enum DuplicateDetector {
         var groups: [DuplicateGroup] = []
         var fingerprinted = 0
         var couldNotLoad = 0
+        /// Descriptors answered from the cache rather than by computing a feature print.
+        var reusedFromCache = 0
         /// Distances of accepted matches, for calibration in Debug builds.
         var matchDistances: [Float] = []
     }
 
+    /// The fingerprinting stage's output.
+    private struct FingerprintPass {
+        var fingerprints: [Fingerprint] = []
+        var couldNotLoad = 0
+        var reusedFromCache = 0
+    }
+
     // MARK: Entry point
 
-    /// - Parameter onProgress: `(processed, total, sub-step wording)`.
+    /// - Parameters:
+    ///   - cache: memoizes the feature prints. Only the descriptor is cached — everything else
+    ///     in a `Fingerprint` is PHAsset metadata that costs nothing to re-read.
+    ///   - onProgress: `(processed, total, sub-step wording)`.
     static func findGroups(in assets: [PHAsset],
                            allowsICloudDownload: Bool,
+                           cache: ScanCacheStore,
                            onProgress: @Sendable @escaping (Int, Int, String) -> Void) async throws -> Result {
         var result = Result()
         guard !assets.isEmpty else { return result }
@@ -47,10 +60,13 @@ enum DuplicateDetector {
         // for as long as the first batch takes, which reads as a freeze.
         onProgress(0, assets.count, "looking at each photo")
 
-        let fingerprints = try await fingerprintAll(assets,
-                                                    allowsICloudDownload: allowsICloudDownload,
-                                                    couldNotLoad: &result.couldNotLoad,
-                                                    onProgress: onProgress)
+        let pass = try await fingerprintAll(assets,
+                                            allowsICloudDownload: allowsICloudDownload,
+                                            cache: cache,
+                                            onProgress: onProgress)
+        let fingerprints = pass.fingerprints
+        result.couldNotLoad = pass.couldNotLoad
+        result.reusedFromCache = pass.reusedFromCache
         result.fingerprinted = fingerprints.count
         guard fingerprints.count > 1 else { return result }
 
@@ -65,20 +81,45 @@ enum DuplicateDetector {
 
     private static func fingerprintAll(_ assets: [PHAsset],
                                        allowsICloudDownload: Bool,
-                                       couldNotLoad: inout Int,
+                                       cache: ScanCacheStore,
                                        onProgress: @Sendable @escaping (Int, Int, String) -> Void)
-    async throws -> [Fingerprint] {
+    async throws -> FingerprintPass {
 
         let total = assets.count
-        var fingerprints: [Fingerprint] = []
+        var pass = FingerprintPass()
+        pass.fingerprints.reserveCapacity(total)
         var processed = 0
-        var failed = 0
         let startedAt = Date()
 
-        try await withThrowingTaskGroup(of: Fingerprint?.self) { group in
-            var next = assets.makeIterator()
+        // Cached descriptors first. Only the feature print is stored — creation date, aspect
+        // ratio, pixel count and favourite status are PHAsset metadata that costs nothing to
+        // re-read, and file size is a resource lookup rather than a decode.
+        let cached = await cache.descriptors(for: assets.map(ScanCacheKey.init))
 
-            for _ in 0..<min(DetectionThresholds.duplicateMaxConcurrent, total) {
+        var needsFingerprinting: [PHAsset] = []
+        needsFingerprinting.reserveCapacity(total - cached.count)
+        for asset in assets {
+            guard let descriptor = cached[asset.localIdentifier] else {
+                needsFingerprinting.append(asset)
+                continue
+            }
+            pass.fingerprints.append(makeFingerprint(asset, descriptor: descriptor))
+            pass.reusedFromCache += 1
+            processed += 1
+        }
+        onProgress(processed, total, "looking at each photo")
+
+        #if DEBUG
+        print("[iClean] descriptor cache: \(pass.reusedFromCache) reused · \(needsFingerprinting.count) to compute")
+        #endif
+
+        var fresh: [(key: ScanCacheKey, descriptor: FeatureDescriptor)] = []
+        fresh.reserveCapacity(needsFingerprinting.count)
+
+        try await withThrowingTaskGroup(of: Fingerprint?.self) { group in
+            var next = needsFingerprinting.makeIterator()
+
+            for _ in 0..<min(DetectionThresholds.duplicateMaxConcurrent, needsFingerprinting.count) {
                 guard let asset = next.next() else { break }
                 group.addTask { await fingerprint(asset, allowsICloudDownload: allowsICloudDownload) }
             }
@@ -87,9 +128,11 @@ enum DuplicateDetector {
                 try Task.checkCancellation()
                 processed += 1
                 if let outcome {
-                    fingerprints.append(outcome)
+                    pass.fingerprints.append(outcome)
+                    // Successes only — a photo we couldn't load may well load next time.
+                    fresh.append((ScanCacheKey(outcome.asset), outcome.descriptor))
                 } else {
-                    failed += 1
+                    pass.couldNotLoad += 1
                 }
                 if processed % DetectionThresholds.duplicateProgressInterval == 0 || processed == total {
                     onProgress(processed, total, "looking at each photo")
@@ -109,8 +152,8 @@ enum DuplicateDetector {
             }
         }
 
-        couldNotLoad = failed
-        return fingerprints
+        await cache.storeDescriptors(fresh)
+        return pass
     }
 
     /// Vision work runs here rather than on Swift's cooperative thread pool.
@@ -150,7 +193,17 @@ enum DuplicateDetector {
         ), let cgImage = image.cgImage else { return nil }
 
         guard let descriptor = await featurePrint(for: cgImage) else { return nil }
+        return makeFingerprint(asset, descriptor: descriptor)
+    }
 
+    /// Pairs a descriptor with the asset metadata clustering needs.
+    ///
+    /// Shared by the cached and freshly-computed paths so the two cannot construct a
+    /// `Fingerprint` differently — the same reason `BlurDetector.analyse` defers to
+    /// `outcome(for:sharpness:)`. Everything here is metadata or a resource lookup; none of it
+    /// is worth caching beside the descriptor.
+    private static func makeFingerprint(_ asset: PHAsset,
+                                        descriptor: FeatureDescriptor) -> Fingerprint {
         let height = max(asset.pixelHeight, 1)
         return Fingerprint(asset: asset,
                            descriptor: descriptor,

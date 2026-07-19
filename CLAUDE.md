@@ -186,9 +186,8 @@ iClean/                              repo root
     Assets.xcassets/                 AppIcon (placeholder), AccentColor (adaptive blue)
 ```
 
-**Not yet built:** the wiring that actually uses the scan cache (M7 phases 4–6 — the store
-exists and is tested, but nothing reads or writes it yet, so re-scans still recompute
-everything), and the M6 items
+**Not yet built:** the user-facing cache controls (M7 phase 6 — storage visibility and "Clear
+cached scan data"; the cache itself is wired into both passes but invisible), and the M6 items
 listed under "Current status".
 
 ### Architecture conventions
@@ -327,8 +326,8 @@ after each scan.
   linkage would chain A≈B≈C into one group without A≈C, which could pre-tick a genuinely
   different photo. Keeper priority: `isFavorite` → resolution → file size → oldest.
   **Favourites are never pre-ticked**, even as extras (`Candidate.preselect`).
-  *Not yet implemented:* the descriptor cache (M7 phases 3–6) — re-scans still recompute every
-  fingerprint. Design is agreed and recorded under "Scan cache design".
+  Descriptors are **cached on disk** (`ScanCacheStore`), so a re-scan recomputes feature prints
+  only for photos that are new or changed — see "Scan cache design".
 - **Scanning** — enumerate `PHFetchResult` lazily in batches on a background actor; request only
   **downscaled** images for analysis (never full-res); run cheap passes first; stream progress;
   fully cancellable. Watch for **Limited access** (subset only) and **iCloud-not-downloaded**
@@ -518,6 +517,22 @@ after each scan.
   ⚠️ **Next device run:** expect scan 1 unchanged (~149s, cold cache), scan 2 to reuse ~4,175
   scores. `blurry found` must stay **146** across both — a different number means the cached
   and measured paths disagree, which is the one thing that would make this unsafe.
+- **M7 phase 5 — descriptors cached: DONE, compile-verified. NOT yet device-verified.**
+  `DuplicateDetector.findGroups` now takes a `ScanCacheStore`, reads descriptors for every
+  photo, and computes feature prints only for the misses. Only the descriptor is cached —
+  creation date, aspect ratio, pixel count and favourite status are metadata that costs nothing
+  to re-read. `makeFingerprint(_:descriptor:)` is shared by the cached and computed paths so
+  they cannot construct a `Fingerprint` differently, mirroring the `BlurDetector` split.
+  **Verified by harness on real Vision output:** 55 pairs of genuine feature prints round-trip
+  through the cache with a **max distance delta of 0.000000000**, and every grouping and
+  auto-tick verdict identical. Across both harnesses ~13,000 real descriptor elements have been
+  checked and **none** required more than half precision.
+  ⚠️ `FeatureDescriptor.halfPrecisionData` carries a **Debug assertion** that each element is
+  fp16-representable. If a device scan ever trips it, that is not a random crash — it is the
+  fp16 assumption failing on real photos, and the fix is to store `Float32` and bump
+  `ScanCacheVersion.descriptor` (which invalidates the cache rather than degrading distances).
+  ⚠️ **Next device run:** scan 2 should reuse ~13,530 descriptors and drop fingerprinting from
+  87s to about a second. **Groups/extras must stay 229/239 and max distance 0.1498.**
 
 ---
 
@@ -602,7 +617,7 @@ per-outcome timing before assuming how much of the blur pass a cache actually re
 failed loads are re-attempted every scan by design (see "cache successes only").
 
 **Phases.** 1 ✅ pin revision + `FeatureDescriptor` · 2 ✅ blur timing · 3 ✅ cache store
-(SQLite, versioning, pruning, backup exclusion) · 4 ✅ wire blur scores · 5 wire descriptors
+(SQLite, versioning, pruning, backup exclusion) · 4 ✅ wire blur scores · 5 ✅ wire descriptors
 · 6 storage visibility + "Clear cached scan data".
 
 **Wiring pattern** (follow it for phase 5): settle the free metadata skips first so they never
@@ -626,6 +641,11 @@ Covered: empty-store misses, blur and descriptor round-trips, staleness by modif
 fp16 losslessness end-to-end (values *and* distance identical), persistence across reopen,
 prune, per-table version invalidation, page size, clear, and graceful degradation on an
 unwritable directory. Re-run it after any change to the store.
+
+A second harness (same compile line, different `main.swift`) generates **real Vision feature
+prints** and checks that a cache round-trip leaves every pairwise distance and every
+grouping/auto-tick verdict bit-identical. That is the property clustering depends on, so run it
+after any change to `FeatureDescriptor` or the descriptor encoding.
 
 **Re-scan UX: transparent.** No new screens or concepts — the scan simply finishes faster.
 
