@@ -231,9 +231,12 @@ as `INFOPLIST_KEY_NSPhotoLibraryUsageDescription` (Info.plist is auto-generated)
    groups / `objectVersion 77`). Verified working on **Xcode 26.6**.
 2. Select the **iClean** target → **Signing & Capabilities** → pick your Team (a free Apple ID
    works) and change **Bundle Identifier** from `com.example.iClean` to something unique to you
-   (e.g. `com.<yourname>.iClean`), or signing will fail.
+   (e.g. `com.<yourname>.iClean`), or signing will fail. **This checkout already installs as
+   `com.shammas.iClean`** — that is the id to use with `simctl`, not the `com.example` default.
 3. Choose your connected iPhone as the run destination and press Run. Photo-library behavior can't
    be meaningfully tested in the Simulator — use a real device.
+   **The device must run iOS 17 or later** (see Minimum iOS above — Vision feature-print
+   revision 2). An iOS 16 device will no longer accept a build at all.
 
 ### Developer-account note
 On a **free** Apple ID, the installed app **expires after 7 days** and must be re-run from Xcode to
@@ -483,10 +486,12 @@ after each scan.
     just disabled. It now says why (with different wording under Limited Access).
   - **Still outstanding:** re-scan-after-deletion edge cases, and iCloud-not-downloaded handling
     beyond the existing opt-in.
-- **M7 — Scan cache: phase 1 of 6 DONE, compile-verified. NOT yet device-verified.**
-  Goal: a re-scan shouldn't recompute what hasn't changed (13.5k fingerprints, 66s, every time).
-  **Phase 1 deliberately ships alone**, because it is the only phase that can change detection
-  results — so if group counts move, there is exactly one possible cause.
+- **M7 — Scan cache: all 6 phases built. Device verification outstanding** (see "Where to pick
+  up" item 1). Goal: a re-scan shouldn't recompute what hasn't changed — 13,530 fingerprints
+  (87s) and a 149s blur pass, every time. Per-phase detail follows.
+- **M7 phases 1 & 2 — revision pin, `FeatureDescriptor`, blur timing: DONE, device-verified.**
+  **Phase 1 deliberately shipped alone**, because it is the only phase that can change detection
+  results — so if group counts moved, there was exactly one possible cause.
   - Pinned the Vision revision (fixing the iOS 16 bug described under Minimum iOS).
   - Replaced `VNFeaturePrintObservation` with `FeatureDescriptor` (`[Float]` + L2). Required for
     caching at all, since an observation can't be reconstructed from bytes.
@@ -553,10 +558,11 @@ after each scan.
 
 ---
 
-## Scan cache design (M7) — agreed plan
+## Scan cache design (M7) — as built
 
-A re-scan currently redoes everything: ~13.5k fingerprints (66s) plus the whole blur pass, even
-when nothing changed. The fix is to memoize the two expensive per-photo *measurements*.
+A scan used to redo everything every time: 13,530 fingerprints (87s) plus the whole blur pass
+(149s), even when nothing had changed. The cache memoizes the two expensive per-photo
+*measurements*, so a re-scan only pays for photos that are new or edited.
 
 **Measured facts** (don't re-derive these; they were established by experiment on 2026-07-19):
 
@@ -580,11 +586,16 @@ further 0.1 MB, so 8 KB is the floor short of an integer-key redesign.
   then costs a re-classify rather than a full re-scan — which matters while the 0.05 question
   is still open.
 - **Cache successes only.** Never persist `couldNotLoad` / `deliveredTooSmall`. That set is
-  volatile — it is the *resolution-availability* limit (256px available for all 13,551 photos,
-  800px missing for 4,995), and iOS moves originals in and out as storage pressure changes.
+  volatile — it is the *resolution-availability* limit (256px available for all 13,530 photos,
+  800px missing for 4,974), and iOS moves originals in and out as storage pressure changes.
   Caching a failure would permanently blind the app to a photo that later becomes checkable.
-- **Store fp16.** Lossless here, and it halves the cache. Guard it with a debug assertion that
-  the round-trip is exact, falling back to Float32 if it ever isn't.
+  The cost is that those ~4,974 photos are re-attempted on every scan, by design.
+- **Store fp16.** Lossless here (Vision computes in half precision and widens), and it halves
+  the cache. `FeatureDescriptor.halfPrecisionData` carries a **Debug assertion** that each
+  element round-trips exactly. If it ever fires that is the assumption breaking on real photos,
+  not a random crash — the fix is a code change (store `Float32`, bump
+  `ScanCacheVersion.descriptor`), *not* a silent runtime fallback, so the cache is invalidated
+  rather than quietly serving degraded distances.
 
 **Storage.** SQLite via the raw `sqlite3` C API (no dependency), in Application Support with
 `isExcludedFromBackup = true` — a regenerable cache must never eat the user's iCloud backup,
@@ -595,7 +606,7 @@ least of all in this app. Tables: `meta(key,value)`, `blur(local_id PK, modified
 
 | Operation | Time |
 |---|---|
-| Write all descriptors | 0.25s |
+| Write all descriptors | 0.14s |
 | **Read all descriptors** | **0.02s** |
 | Read all blur scores | <0.01s |
 | Prune (nothing stale) | <0.01s |
@@ -612,10 +623,16 @@ than being trusted because it compiles.
 **Invalidation.** Key on `localIdentifier` + `modificationDate`. Version-stamp blur on
 `blurAnalysisDimension`/`blurTileSize`/`blurTilePercentile`, prints on
 `duplicateAnalysisDimension`/`visionFeaturePrintRevision`/precision. A mismatch drops only the
-affected table. Prune rows whose identifiers have left the library.
+affected table. Rows for assets that have left the library are pruned after each scan.
 Note `modificationDate` also changes on non-pixel edits (favouriting) → needless recompute:
 wasteful, never stale, which is the safe direction. After a device restore `localIdentifier`
 can change wholesale → total miss, self-healing via prune.
+
+⚠️ **Pruning is skipped under Limited Access.** There the fetch only ever returns the photos the
+user has shared, so pruning to that subset would discard good measurements for everything else
+and re-measure them the moment the shared set changed — the cache would thrash on exactly the
+flow that is most tedious to sit through. Stale rows are the cheaper failure; the next
+full-access scan clears them.
 
 **Measured pass costs** (device, 2026-07-19, 17,087-item library — this is what the cache is
 aimed at, so don't re-derive it):
@@ -626,22 +643,32 @@ aimed at, so don't re-derive it):
 | Fingerprint | 13,530 | **87s** | ~37% |
 | Compare | 13,530 | <1s | ~0% |
 
-**Blur is the larger cost and the cheaper thing to cache** (<1 MB of scores vs ~21 MB of
-descriptors), which is why phase 4 precedes phase 5. Fingerprinting is 6.4ms/photo at 256px;
-blur is 800px (~9.8× the pixels), so the 4,175 real measurements plausibly account for ~125s of
-the 149s and the 4,974 failed loads are comparatively cheap. **Not yet decomposed** — worth
-per-outcome timing before assuming how much of the blur pass a cache actually recovers, since
-failed loads are re-attempted every scan by design (see "cache successes only").
+**Blur is the larger cost and the cheaper thing to cache** (<1 MB of scores vs 24.6 MB of
+descriptors), which is why phase 4 precedes phase 5.
+
+⚠️ **How much of that 149s a cache recovers is still an estimate.** Fingerprinting is
+6.4ms/photo at 256px and blur is 800px (~9.8× the pixels), so the 4,175 real measurements
+*plausibly* account for ~125s and the 4,974 failed loads are comparatively cheap — but that is
+arithmetic, not measurement. Phase 4 added a `#if DEBUG` **`blur cost split`** line that
+decomposes it properly (measured vs failed vs cached); it has been written but **not yet run on
+device**. Read it off the next scan rather than trusting the estimate above. It matters because
+failed loads are re-attempted every scan by design (see "cache successes only"), so they are
+the floor on how fast a warm re-scan can get.
 
 **Phases.** 1 ✅ pin revision + `FeatureDescriptor` · 2 ✅ blur timing · 3 ✅ cache store
 (SQLite, versioning, pruning, backup exclusion) · 4 ✅ wire blur scores · 5 ✅ wire descriptors
 · 6 ✅ storage visibility + "Clear Saved Data". **M7 complete pending device verification.**
 
-**Wiring pattern** (follow it for phase 5): settle the free metadata skips first so they never
-occupy a cache lookup or a row; ask the cache for the remainder; measure only the misses; store
-successes only. Keep classification separable from measurement — `BlurDetector.analyse` calls
-`outcome(for:sharpness:)` rather than duplicating it, so the cached and measured paths are the
-same code and cannot drift apart. That property is what makes the cache safe to trust.
+**Wiring pattern** — follow it if a third measurement is ever cached. Settle the free metadata
+skips first so they never occupy a cache lookup or a row; ask the cache for the remainder;
+measure only the misses; store successes only.
+
+**Keep classification separable from measurement, and share the construction.**
+`BlurDetector.analyse` calls `outcome(for:sharpness:)` rather than duplicating it, and
+`DuplicateDetector` builds every `Fingerprint` through `makeFingerprint(_:descriptor:)`. In
+both cases the cached and freshly-computed paths are *literally the same code*, so they cannot
+drift apart as thresholds move. That structural property — not the test suite — is the main
+reason the cache is safe to trust in a flow that pre-ticks photos for deletion.
 
 **Testing the store.** There is no test target, so the cache is checked by a standalone macOS
 harness that compiles the **real app sources**:
@@ -670,15 +697,21 @@ into the app. Run it after any change to `ScanCacheStore`, `ScanCacheVersion`, o
 
 ## Where to pick up
 
-In rough priority order:
+In rough priority order. **Items 1–5 are device checks**, and there is now a lot of
+compile-verified-only code sitting behind them — M5's accessibility pass, all of M6, and M7
+phases 4–6. Adding more on top before exercising it is the pattern to avoid here.
 
-Everything at the top of this list is a **device check** — the code below it is written but
-unexercised, and stacking more on top of unverified UI is the pattern to avoid here.
-
-1. **M7 phases 3–6** — the cache store, then blur scores, then descriptors, then storage
-   visibility. Phase 1 is validated and the pass costs are measured (see "Scan cache design");
-   this is now unblocked and is the largest single improvement available (a ~4 min scan should
-   drop to seconds on re-scan).
+1. **Verify M7 on device — two scans back to back.** Scan 1 populates a cold cache and should
+   look unchanged (~149s blur, ~87s fingerprinting). Scan 2 should reuse ~4,175 blur scores and
+   ~13,530 descriptors, dropping fingerprinting to about a second.
+   **Three numbers must hold across both scans:** `blurry found` = **146**, groups/extras =
+   **229/239**, max distance = **0.1498**. If they do, the cache is provably transparent; if any
+   moves, a cached path disagrees with a measured one and that must be understood before the
+   cache is trusted — it feeds the only category that pre-ticks deletions.
+   Scan 1 also prints `blur cost split`, which replaces the estimate of how much of the 149s is
+   real measurement versus failed loads. Record it here.
+   While on Home, check the new **"Faster scanning"** card: wording, the reported size, and that
+   **Clear Saved Data** actually frees it.
 2. **Verify the review screens at a large text size on device** (Settings → Display & Brightness
    → Text Size, or Accessibility → Larger Text for the AX range). The M5 pass is verified in the
    simulator only for Onboarding and the Permission Primer; `CandidateRow`, the summary category
@@ -696,8 +729,12 @@ unexercised, and stacking more on top of unverified UI is the pattern to avoid h
    should rise above 0.05. Now the *majority* band: of 256 matches, 101 are ≤0.05 and 118 sit
    in 0.10–0.15.
 8. *Optional:* merge the blur and duplicate passes into a single image load (~45% less pixel
-   work). Deliberately not done — scan time is currently acceptable (~66s of fingerprinting on a
-   17k library) and it isn't worth destabilising the highest-stakes code for speed.
+   work). Deliberately not done, and **the scan cache has largely removed the motive** — the
+   cost it would attack is the *first* scan, which is now the only one that pays full price.
+   Still not worth destabilising the highest-stakes code for speed.
+9. *Optional:* an integer primary key for the cache tables. Would reclaim ~1.5 MB of the 24.6 MB
+   (two TEXT indexes over 43-char identifiers), at the cost of a hash-collision risk or a
+   mapping table. Measured and judged not worth it — recorded so it isn't re-investigated.
 
 ## Repository
 
@@ -708,5 +745,10 @@ unexercised, and stacking more on top of unverified UI is the pattern to avoid h
 picks the wrong key and fails with "Permission … denied to ichummas".
 Verify with `ssh -T git@github-mshammas` (should greet "Hi mshammas!").
 
-The full milestone plan lives at
+The original milestone plan lives at
 `/Users/shammas/.claude/plans/this-repo-is-for-wondrous-naur.md`.
+
+⚠️ **That file is historical.** It was written before M0 and stops at a one-line sketch of
+M5/M6; it knows nothing of M7, the accessibility work, the iOS 17 bump, or any of the
+calibration. **This file is the authority** — read the plan only for the original intent behind
+a decision, never for current status.
