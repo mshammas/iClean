@@ -477,10 +477,17 @@ after each scan.
   - Replaced `VNFeaturePrintObservation` with `FeatureDescriptor` (`[Float]` + L2). Required for
     caching at all, since an observation can't be reconstructed from bytes.
   - Added a blur-pass timing heartbeat (`#if DEBUG`) matching the fingerprinting one.
-  ⚠️ **Next device run must confirm the duplicate baseline is unchanged:** 241 groups,
-  262 extras, median distance 0.067, max 0.1498 on the 17,116-item library. A shift means the
-  L2 swap or the revision pin changed behaviour, and that must be understood before phase 3.
-  The same run gives the first blur-pass timing, which decides how phases 4/5 are prioritised.
+  **Device run 2026-07-19 — phase 1 validated.** New baseline on a now-17,087-item library:
+  229 groups, 239 extras, 256 matches, median 0.0896, **max 0.1498 (unchanged)**.
+  The drop from 241/262/337 is accounted for by the user having deleted duplicates during the
+  M4 device review — the library lost 21 photos and 8 videos, and removing one photo from a
+  cluster of five removes four pairs, so −21 duplicate photos explains −81 matches. The
+  `≤ 0.05` band fell 139 → 101, i.e. the *pre-ticked near-certain* copies are the ones gone,
+  which is exactly what that review deletes.
+  Two controls say the metric itself did not move: **max distance is identical to four decimal
+  places**, and **blur (which shares the library and scan plumbing but not the distance code)
+  did not shift** — median 1388 → 1390, `≤100` 3.7% → 3.5%, same distribution shape. Together
+  with the bit-exact verification against Vision, the L2 swap and revision pin are clean.
 
 ---
 
@@ -523,6 +530,22 @@ Note `modificationDate` also changes on non-pixel edits (favouriting) → needle
 wasteful, never stale, which is the safe direction. After a device restore `localIdentifier`
 can change wholesale → total miss, self-healing via prune.
 
+**Measured pass costs** (device, 2026-07-19, 17,087-item library — this is what the cache is
+aimed at, so don't re-derive it):
+
+| Pass | Items | Time | Share |
+|---|---|---|---|
+| Blur | 11,818 processed · 4,175 actually measured | **149s** | ~63% |
+| Fingerprint | 13,530 | **87s** | ~37% |
+| Compare | 13,530 | <1s | ~0% |
+
+**Blur is the larger cost and the cheaper thing to cache** (<1 MB of scores vs ~21 MB of
+descriptors), which is why phase 4 precedes phase 5. Fingerprinting is 6.4ms/photo at 256px;
+blur is 800px (~9.8× the pixels), so the 4,175 real measurements plausibly account for ~125s of
+the 149s and the 4,974 failed loads are comparatively cheap. **Not yet decomposed** — worth
+per-outcome timing before assuming how much of the blur pass a cache actually recovers, since
+failed loads are re-attempted every scan by design (see "cache successes only").
+
 **Phases.** 1 ✅ pin revision + `FeatureDescriptor` · 2 ✅ blur timing · 3 cache store
 (SQLite, versioning, pruning, backup exclusion) · 4 wire blur scores · 5 wire descriptors
 · 6 storage visibility + "Clear cached scan data".
@@ -536,10 +559,10 @@ In rough priority order:
 Everything at the top of this list is a **device check** — the code below it is written but
 unexercised, and stacking more on top of unverified UI is the pattern to avoid here.
 
-1. **Re-run a scan on device and check the duplicate baseline is unchanged** — 241 groups,
-   262 extras, median distance 0.067, max 0.1498. This validates M7 phase 1 (the revision pin
-   and the L2 swap), and must be confirmed before any caching is built on top. The same run
-   prints the first blur-pass timing, which decides where caching pays off.
+1. **M7 phases 3–6** — the cache store, then blur scores, then descriptors, then storage
+   visibility. Phase 1 is validated and the pass costs are measured (see "Scan cache design");
+   this is now unblocked and is the largest single improvement available (a ~4 min scan should
+   drop to seconds on re-scan).
 2. **Verify the review screens at a large text size on device** (Settings → Display & Brightness
    → Text Size, or Accessibility → Larger Text for the AX range). The M5 pass is verified in the
    simulator only for Onboarding and the Permission Primer; `CandidateRow`, the summary category
@@ -551,13 +574,12 @@ unexercised, and stacking more on top of unverified UI is the pattern to avoid h
    Limited Access wording (share only a few photos with iClean, then scan).
 5. **The iCloud opt-in ("Check Those Too") has never been run.** Needs a Wi-Fi test, and a check
    that Stop still responds mid-download.
-6. **Continue M7** — phases 3–6 of the scan cache (see "Scan cache design" above). Gated on
-   item 1: don't build caching on top of an unverified duplicate baseline.
-7. **Finish M6** — re-scan-after-deletion edge cases.
-8. **Ask about the 0.05–0.15 duplicate band** while in the duplicates screen: are those genuine
+6. **Finish M6** — re-scan-after-deletion edge cases.
+7. **Ask about the 0.05–0.15 duplicate band** while in the duplicates screen: are those genuine
    duplicates or distinct shots? That answer decides whether `duplicateAutoTickMaxDistance`
-   should rise above 0.05.
-9. *Optional:* merge the blur and duplicate passes into a single image load (~45% less pixel
+   should rise above 0.05. Now the *majority* band: of 256 matches, 101 are ≤0.05 and 118 sit
+   in 0.10–0.15.
+8. *Optional:* merge the blur and duplicate passes into a single image load (~45% less pixel
    work). Deliberately not done — scan time is currently acceptable (~66s of fingerprinting on a
    17k library) and it isn't worth destabilising the highest-stakes code for speed.
 
