@@ -569,9 +569,13 @@ after each scan.
   usable afterwards.
   ⚠️ The card sits behind photo authorization, so the **simulator cannot show it** — check the
   wording and the Dynamic Type layout on device.
-- **Warm-cache freeze (found by the M7 two-scan device test, 2026-07-19): FIXED,
-  compile-verified only.** Scan 2 sat on "Step 3 of 3 · looking at each photo · Checked 0 of
+- **Warm-cache freeze (found by the M7 two-scan device test, 2026-07-19): FIXED and
+  device-verified.** Scan 2 sat on "Step 3 of 3 · looking at each photo · Checked 0 of
   13,530" with **Stop doing nothing**, then eventually completed correctly.
+  **Verified on device after the fix (2026-07-19): the counter visibly counts up through pass 3
+  and Stop responds.** A warm scan is now **~12s end to end** — blur 11s (4,175 scores reused,
+  only the 4,974 unloadable retried), pass 3 effectively instant (13,530 descriptors reused,
+  comparison <1s). Control numbers held for a third run: 146 · 229/239 · 0.1498.
   Cause: `DuplicateDetector.Fingerprint.bytes` was populated eagerly in `makeFingerprint` via
   `AssetResourceInfo.estimatedFileSize`, which is a **synchronous `PHAssetResource` query
   costing milliseconds**. On a cold cache that ran inside six concurrent workers, hidden behind
@@ -737,19 +741,17 @@ In rough priority order. **Items 1–5 are device checks**, and there is now a l
 compile-verified-only code sitting behind them — M5's accessibility pass, all of M6, and M7
 phases 4–6. Adding more on top before exercising it is the pattern to avoid here.
 
-1. **Re-run the two scans to confirm the warm-cache freeze fix.** The correctness half of this
-   item is **done** — the cache is proven transparent (146 / 229·239 / 0.1498 held exactly).
-   What's outstanding is the fix for the freeze it exposed: scan 2 should now show **pass 3
-   counting up from 0 rather than sitting on it**, with **Stop responsive throughout**, and
-   should finish in a few seconds rather than minutes. Watch the cold scan too — dropping
-   ~13,000 `PHAssetResource` queries should pull the 87s fingerprint pass down noticeably;
-   record the new figure.
-   Still unrecorded: **scan 1's `blur cost split`** (it scrolled off the console last time),
-   which decomposes the cold 149s into real measurement versus failed loads. The warm floor is
-   known: ~13s.
-   While on Home, check the **"Faster scanning"** card: wording, the reported size (**47.2 MB**
+1. **M7 is device-verified on the warm path; only the cold path is unmeasured.** Transparency
+   (146 / 229·239 / 0.1498), the ~12s warm scan, live progress and a working Stop are all
+   confirmed. What remains is a **cold-cache scan**: dropping ~13,000 `PHAssetResource` queries
+   should pull the 87s fingerprint pass down noticeably, and that has never been timed. Clear
+   the cache from Home, scan, and record the new fingerprint figure — plus **scan 1's
+   `blur cost split`**, still unrecorded (it scrolled off the console both times), which
+   decomposes the cold 149s into real measurement versus failed loads. The warm floor is known:
+   ~11–13s, from the 4,974 photos with no local 800px rendition.
+   That same run exercises the **"Faster scanning"** card: wording, the reported size (**47.2 MB**
    on this library, not the 24.6 MB the harness predicts), and that **Clear Saved Data**
-   actually frees it.
+   actually frees it — none of which has been seen on device yet.
 2. **Verify the review screens at a large text size on device** (Settings → Display & Brightness
    → Text Size, or Accessibility → Larger Text for the AX range). The M5 pass is verified in the
    simulator only for Onboarding and the Permission Primer; `CandidateRow`, the summary category
