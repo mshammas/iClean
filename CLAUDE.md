@@ -484,8 +484,22 @@ after each scan.
     into a false all-clear — the same failure mode the blur coverage note exists to avoid.
   - **Empty library.** Home explained nothing when the library was empty; the Scan button was
     just disabled. It now says why (with different wording under Limited Access).
-  - **Still outstanding:** re-scan-after-deletion edge cases, and iCloud-not-downloaded handling
-    beyond the existing opt-in.
+  - **A duplicate keeper could be deleted from another category, losing the whole group.**
+    The keeper is only protected *on the duplicates screen* — but the same photo is also in
+    `photosForDuplicates` when it is a screenshot or a blurry photo, so it appears in that
+    category as an ordinary tickable row that knows nothing about the group it holds up.
+    "Tick All" in Screenshots could therefore delete a keeper; the group would go on claiming
+    "Keeping this one" about a photo that was gone, and every extra stayed tickable — so the
+    user could then delete **every copy**, breaking the app's central promise that a duplicate
+    group always keeps one. `CleanupViewModel.promoteKeepersIfDeleted()` now runs inside
+    `delete(ids:)` and promotes a replacement (same priority as the detector: favourite →
+    resolution → size → oldest), left unticked. This was a safety bug, not a cosmetic one.
+  - **Empty summary after deleting everything** said "We didn't find anything worth deleting",
+    which reads as if the work had been undone. Now distinguished via `completedDeletions`.
+  - **Re-scan no longer carries stale state.** `runScan` clears `deletedIDs` and
+    `keeperOverrides` — the latter keyed by group UUIDs a new scan never mints again. Matters
+    most for the iCloud opt-in, which re-scans *mid-review*.
+  - **Still outstanding:** iCloud-not-downloaded handling beyond the existing opt-in.
 - **M7 — Scan cache: all 6 phases built; the two-scan device test is DONE and the cache is
   proven transparent.** Goal: a re-scan shouldn't recompute what hasn't changed — 13,530
   fingerprints (87s) and a 149s blur pass, every time. Per-phase detail follows.
@@ -763,7 +777,12 @@ phases 4–6. Adding more on top before exercising it is the pattern to avoid he
    Limited Access wording (share only a few photos with iClean, then scan).
 5. **The iCloud opt-in ("Check Those Too") has never been run.** Needs a Wi-Fi test, and a check
    that Stop still responds mid-download.
-6. **Finish M6** — re-scan-after-deletion edge cases.
+6. **Verify the M6 deletion-consistency fixes** (compile-verified only). The one that matters:
+   open **Screenshots**, "Tick All", delete — then open **Duplicates**. Any group whose keeper
+   was among those screenshots must now show a promoted keeper reading "the copy we were
+   keeping has been deleted", and must still be keeping a copy. Also worth seeing: deleting
+   everything in every category should leave the summary saying "You've been through
+   everything we found" rather than "we didn't find anything".
 7. **Ask about the 0.05–0.15 duplicate band** while in the duplicates screen: are those genuine
    duplicates or distinct shots? That answer decides whether `duplicateAutoTickMaxDistance`
    should rise above 0.05. Now the *majority* band: of 256 matches, 101 are ≤0.05 and 118 sit

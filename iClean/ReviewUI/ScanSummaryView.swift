@@ -94,19 +94,31 @@ struct ScanSummaryView: View {
         }
     }
 
+    /// Two quite different situations end up here, and telling someone "we didn't find
+    /// anything" straight after they deleted two hundred photos reads as if the work was
+    /// undone. `completedDeletions` separates "nothing to find" from "you've dealt with it
+    /// all" — including the mid-review per-group deletes, which can empty the last category
+    /// without ever passing through the confirm screen.
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 12) {
             Image(systemName: "checkmark.seal.fill")
                 .icIconSize(56)
                 .foregroundStyle(ICColor.success)
                 .accessibilityHidden(true)
-            Text(hasLimitedAccess
-                 ? "We didn't find anything worth deleting in the photos you've shared. If you'd like iClean to check more, share more photos with it."
-                 : "We didn't find anything worth deleting. Your library is in good shape.")
+            Text(emptyStateMessage)
                 .icStyle(.body)
                 .foregroundStyle(ICColor.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private var emptyStateMessage: String {
+        if viewModel.completedDeletions > 0 {
+            return "You've been through everything we found. Deleted items are in your Recently Deleted album for the next 30 days if you change your mind."
+        }
+        return hasLimitedAccess
+            ? "We didn't find anything worth deleting in the photos you've shared. If you'd like iClean to check more, share more photos with it."
+            : "We didn't find anything worth deleting. Your library is in good shape."
     }
 
     private func categoryCard(_ category: CleanupCategory) -> some View {

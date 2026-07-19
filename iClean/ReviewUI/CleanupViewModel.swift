@@ -125,6 +125,51 @@ final class CleanupViewModel: ObservableObject {
         selection.setSelected([candidate.id], to: false)
     }
 
+    /// Promotes a replacement keeper in any group whose keeper has been deleted elsewhere.
+    ///
+    /// A duplicate keeper is only protected *on the duplicates screen*. The same photo can also
+    /// be a screenshot or a blurry photo, and in that category it is an ordinary tickable row
+    /// that knows nothing about the group it is holding up. So "Tick All" in Screenshots can
+    /// delete a keeper.
+    ///
+    /// Left alone the group would go on claiming "Keeping this one" about a photo that no
+    /// longer exists, and — far worse — every extra would stay tickable, so the user could
+    /// then delete the whole group and lose every copy. Promoting a replacement keeps
+    /// **every group always keeps at least one copy** true whichever screen the deletion
+    /// happened on. The promoted copy is left unticked, for the same reason `makeKeeper` does:
+    /// nothing should quietly become marked for deletion as a side effect.
+    private func promoteKeepersIfDeleted() {
+        for group in (results?.duplicateGroups ?? []).map({ keeperOverrides[$0.id] ?? $0 }) {
+            guard deletedIDs.contains(group.keeper.localIdentifier) else { continue }
+
+            let remaining = group.extras.filter { !deletedIDs.contains($0.id) }
+            guard let promoted = bestKeeper(among: remaining) else { continue }
+
+            keeperOverrides[group.id] = DuplicateGroup(
+                id: group.id,
+                keeper: promoted.asset,
+                keeperReason: "Keeping this one — the copy we were keeping has been deleted",
+                keeperBytes: promoted.estimatedBytes,
+                extras: remaining.filter { $0.id != promoted.id })
+
+            selection.setSelected([promoted.id], to: false)
+        }
+    }
+
+    /// Picks the best copy to keep, mirroring `DuplicateDetector`'s priority: a favourite
+    /// first, then highest resolution, then largest file, then oldest. Kept consistent with the
+    /// detector so a promoted keeper is the same copy the app would have chosen itself.
+    private func bestKeeper(among candidates: [Candidate]) -> Candidate? {
+        candidates.sorted { lhs, rhs in
+            if lhs.asset.isFavorite != rhs.asset.isFavorite { return lhs.asset.isFavorite }
+            let lhsPixels = lhs.asset.pixelWidth * lhs.asset.pixelHeight
+            let rhsPixels = rhs.asset.pixelWidth * rhs.asset.pixelHeight
+            if lhsPixels != rhsPixels { return lhsPixels > rhsPixels }
+            if lhs.estimatedBytes != rhs.estimatedBytes { return lhs.estimatedBytes > rhs.estimatedBytes }
+            return (lhs.asset.creationDate ?? .distantPast) < (rhs.asset.creationDate ?? .distantPast)
+        }.first
+    }
+
     // MARK: Scanning
 
     /// Runs a scan to completion. The caller owns the surrounding `Task`, so cancelling
@@ -132,6 +177,13 @@ final class CleanupViewModel: ObservableObject {
     /// - Parameter includeICloudPhotos: opt-in deep scan that downloads iCloud-only originals
     ///   so they can be checked too. Much slower and uses network data.
     func runScan(includeICloudPhotos: Bool = false) async {
+        // A re-scan starts from the library as it is now, so last scan's bookkeeping is dead
+        // weight: deleted assets no longer come back from the fetch, and `keeperOverrides` is
+        // keyed by group UUIDs that this scan will never mint again. Carrying them forward
+        // isn't wrong so much as untrue — and this runs mid-review for the iCloud opt-in,
+        // where stale state would be least visible and hardest to reason about.
+        deletedIDs.removeAll()
+        keeperOverrides.removeAll()
         scanState = .scanning(ScanProgress(scanned: 0,
                                            total: 0,
                                            includesICloudPhotos: includeICloudPhotos))
@@ -209,6 +261,9 @@ final class CleanupViewModel: ObservableObject {
             // Drop them from view state so the UI can't show rows for deleted photos.
             deletedIDs.formUnion(ids)
             selection.setSelected(ids, to: false)
+            // A deletion in one category can remove a duplicate group's keeper — repair that
+            // before anything reads the groups again.
+            promoteKeepersIfDeleted()
             completedDeletions += 1
             return result
         } catch {
