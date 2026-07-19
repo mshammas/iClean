@@ -156,7 +156,11 @@ iClean/                              repo root
                                      candidate (tick control) or the keeper (read-only).
                                      Laid out as a **column** (top bar / pager / bottom bar),
                                      never a ZStack — floating controls covered the photo the
-                                     user was trying to judge. Each page shows the cached
+                                     user was trying to judge. The bottom bar builds **every**
+                                     page's controls in a ZStack and shows only the current
+                                     one, so its height is the tallest page's and the photo
+                                     stays put while swiping (a per-page bar resized the pager
+                                     and made the image jump — fatal for comparing). Each page shows the cached
                                      thumbnail instantly, then swaps in the full image, so a
                                      swipe never lands on a blank screen. Pan is high-priority
                                      only while zoomed, so at normal zoom the swipe reaches
@@ -370,8 +374,13 @@ after each scan.
      (now a column: top bar / pager / bottom bar), each page showed a blank while loading (now
      shows the cached thumbnail instantly, then swaps in the full image), and the two buttons
      read almost identically ("Keep This One" vs "Keep This One Instead" → the toggle is now
-     "Don't Delete This One").
-  ⚠️ The layout/wording round (3) is **compile-verified only** — not yet checked on device.
+     "Don't Delete This One");
+  4. **the photo moved between pages** (reported from device, 2026-07-19) — the bottom bar was
+     built for the current page only, so swiping from the keeper (short bar) to a copy
+     (two-line caption + two buttons) resized the pager and shifted the image, which defeats
+     swipe-to-compare. The bar now stacks every page's controls and reveals only the current
+     one, so its height is the tallest page's and the photo stays put.
+  ⚠️ Rounds 3 and 4 are **compile-verified only** — not yet checked on device.
 - **M3 — Blur detection: DONE, device-verified and calibrated on a real library.**
   `SharpnessAnalyzer` (Laplacian variance) + `BlurDetector` run as a **second scan pass** with
   bounded concurrency (6 at a time), reporting progress as "Step 2 of 3". The threshold and

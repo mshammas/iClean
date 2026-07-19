@@ -148,40 +148,24 @@ struct FullScreenAssetView: View {
         .padding(.vertical, 12)
     }
 
+    /// Every page's controls are stacked, with only the current one visible.
+    ///
+    /// This is what keeps the **photo in the same place while swiping**. The keeper's bar is
+    /// short (a size and one line of text) and a copy's is tall (a two-line caption plus one
+    /// or two buttons); if the bar were built only for the current page, its height would
+    /// change on every swipe, resizing the pager above it and jumping the image up and down —
+    /// which defeats the whole point of swiping to compare. A `ZStack` takes the size of its
+    /// largest child, so the bar is as tall as the tallest page and then never moves.
     @ViewBuilder
     private var bottomBar: some View {
-        if let target = current {
-            VStack(spacing: 10) {
-                Text(target.caption)
-                    .icStyle(.bodyBold)
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if let candidate = target.candidate {
-                    let isTicked = viewModel.selection.isSelected(candidate.id)
-
-                    // Deliberately *not* worded "Keep This One": that read almost identically
-                    // to "Keep This One Instead" below, and the two do very different things.
-                    ICButton(title: isTicked ? "Don't Delete This One" : "Tick for Deletion",
-                             systemImage: isTicked ? "arrow.uturn.backward" : "trash",
-                             role: isTicked ? .secondary : .destructive) {
-                        viewModel.toggle(candidate)
-                    }
-
-                    // Only inside a duplicate group: which copy is kept is a suggestion.
-                    if candidate.duplicateGroupID != nil {
-                        ICButton(title: "Keep This One Instead",
-                                 systemImage: "checkmark.seal",
-                                 role: .secondary) {
-                            viewModel.makeKeeper(candidate)
-                        }
-                    }
-                } else {
-                    Label("This copy is being kept", systemImage: "checkmark.seal.fill")
-                        .icStyle(.bodyBold)
-                        .foregroundStyle(ICColor.success)
-                        .padding(.vertical, 10)
+        if current != nil {
+            ZStack {
+                ForEach(targets) { target in
+                    let isCurrent = target.id == currentID
+                    bottomBarContent(for: target)
+                        .opacity(isCurrent ? 1 : 0)
+                        .allowsHitTesting(isCurrent)
+                        .accessibilityHidden(!isCurrent)
                 }
             }
             .padding(.horizontal, 20)
@@ -190,6 +174,43 @@ struct FullScreenAssetView: View {
             .frame(maxWidth: .infinity)
             .background(Color.black)
             .animation(.none, value: currentID)   // controls shouldn't cross-fade while swiping
+        }
+    }
+
+    @ViewBuilder
+    private func bottomBarContent(for target: FullScreenTarget) -> some View {
+        VStack(spacing: 10) {
+            Text(target.caption)
+                .icStyle(.bodyBold)
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let candidate = target.candidate {
+                let isTicked = viewModel.selection.isSelected(candidate.id)
+
+                // Deliberately *not* worded "Keep This One": that read almost identically
+                // to "Keep This One Instead" below, and the two do very different things.
+                ICButton(title: isTicked ? "Don't Delete This One" : "Tick for Deletion",
+                         systemImage: isTicked ? "arrow.uturn.backward" : "trash",
+                         role: isTicked ? .secondary : .destructive) {
+                    viewModel.toggle(candidate)
+                }
+
+                // Only inside a duplicate group: which copy is kept is a suggestion.
+                if candidate.duplicateGroupID != nil {
+                    ICButton(title: "Keep This One Instead",
+                             systemImage: "checkmark.seal",
+                             role: .secondary) {
+                        viewModel.makeKeeper(candidate)
+                    }
+                }
+            } else {
+                Label("This copy is being kept", systemImage: "checkmark.seal.fill")
+                    .icStyle(.bodyBold)
+                    .foregroundStyle(ICColor.success)
+                    .padding(.vertical, 10)
+            }
         }
     }
 }
