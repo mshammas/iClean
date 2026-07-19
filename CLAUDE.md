@@ -486,9 +486,23 @@ after each scan.
     just disabled. It now says why (with different wording under Limited Access).
   - **Still outstanding:** re-scan-after-deletion edge cases, and iCloud-not-downloaded handling
     beyond the existing opt-in.
-- **M7 — Scan cache: all 6 phases built. Device verification outstanding** (see "Where to pick
-  up" item 1). Goal: a re-scan shouldn't recompute what hasn't changed — 13,530 fingerprints
-  (87s) and a 149s blur pass, every time. Per-phase detail follows.
+- **M7 — Scan cache: all 6 phases built; the two-scan device test is DONE and the cache is
+  proven transparent.** Goal: a re-scan shouldn't recompute what hasn't changed — 13,530
+  fingerprints (87s) and a 149s blur pass, every time. Per-phase detail follows.
+  **Device run 2026-07-19, two scans back to back — all three control numbers held exactly:**
+  `blurry found` **146**, groups/extras **229/239**, max distance **0.1498**, and the whole
+  sharpness distribution and match-distance histogram are identical between the cold and warm
+  scans. Scan 2 reused **4,175 blur scores and all 13,530 descriptors**. That is the property
+  the cache had to have before it could be trusted in the pre-ticking path, and it has it.
+  Cache on disk: **47.2 MB** — nearly double the 24.6 MB the harness measured at the same photo
+  count, so the harness's synthetic rows understate real overhead. Not a problem (the Home card
+  accounts for it honestly), but don't quote 24.6 MB as the on-device figure.
+  ⚠️ **Scan 2 exposed a real freeze, since fixed** — see "Warm-cache freeze" below.
+  **Warm blur-pass floor measured:** `blur cost split · failed 4974 in 76s (15ms each)`, i.e.
+  ~13s wall at 6 concurrent. Those 4,974 photos have no local 800px rendition and are
+  re-attempted every scan by design, so **~13s is the floor on a warm blur pass** — the cache
+  cannot get it below that. (Scan 1's split scrolled out of the console before it was captured,
+  so the cold-scan decomposition of the 149s is still unrecorded.)
 - **M7 phases 1 & 2 — revision pin, `FeatureDescriptor`, blur timing: DONE, device-verified.**
   **Phase 1 deliberately shipped alone**, because it is the only phase that can change detection
   results — so if group counts moved, there was exactly one possible cause.
@@ -555,6 +569,28 @@ after each scan.
   usable afterwards.
   ⚠️ The card sits behind photo authorization, so the **simulator cannot show it** — check the
   wording and the Dynamic Type layout on device.
+- **Warm-cache freeze (found by the M7 two-scan device test, 2026-07-19): FIXED,
+  compile-verified only.** Scan 2 sat on "Step 3 of 3 · looking at each photo · Checked 0 of
+  13,530" with **Stop doing nothing**, then eventually completed correctly.
+  Cause: `DuplicateDetector.Fingerprint.bytes` was populated eagerly in `makeFingerprint` via
+  `AssetResourceInfo.estimatedFileSize`, which is a **synchronous `PHAssetResource` query
+  costing milliseconds**. On a cold cache that ran inside six concurrent workers, hidden behind
+  the image decode and Vision call. On a warm cache there is nothing left to hide it behind:
+  the cached-descriptor loop ran all 13,530 queries **serially, emitting no progress, never
+  yielding and never checking cancellation**, between the `onProgress(0, …)` that opens pass 3
+  and the next report at the end of the loop.
+  Two fixes, and both matter:
+  - **`bytes` is now computed, not stored.** Size is only ever read inside `makeGroup` — for
+    the few hundred photos that land in a cluster, not for all 13,530. This deletes ~13,000
+    PhotoKit queries from *both* paths, so it should shorten the cold 87s pass too.
+  - **The cached loop now reports progress, yields and checks cancellation every 250 photos**,
+    like every other stage.
+  ⚠️ **General rule, and this is the second time it has bitten:** a cache doesn't just remove
+  work, it *removes the cover that hid other work*. Any per-asset cost sitting beside a cached
+  measurement becomes the whole pass once the measurement is free. The first instance was
+  blocking Vision calls starving the cooperative pool; this is the same shape. **Every loop
+  that walks the whole library must report progress, yield, and check cancellation** — no
+  exceptions for "this bit is fast", because fast is relative to what the cache removed.
 
 ---
 
@@ -701,17 +737,19 @@ In rough priority order. **Items 1–5 are device checks**, and there is now a l
 compile-verified-only code sitting behind them — M5's accessibility pass, all of M6, and M7
 phases 4–6. Adding more on top before exercising it is the pattern to avoid here.
 
-1. **Verify M7 on device — two scans back to back.** Scan 1 populates a cold cache and should
-   look unchanged (~149s blur, ~87s fingerprinting). Scan 2 should reuse ~4,175 blur scores and
-   ~13,530 descriptors, dropping fingerprinting to about a second.
-   **Three numbers must hold across both scans:** `blurry found` = **146**, groups/extras =
-   **229/239**, max distance = **0.1498**. If they do, the cache is provably transparent; if any
-   moves, a cached path disagrees with a measured one and that must be understood before the
-   cache is trusted — it feeds the only category that pre-ticks deletions.
-   Scan 1 also prints `blur cost split`, which replaces the estimate of how much of the 149s is
-   real measurement versus failed loads. Record it here.
-   While on Home, check the new **"Faster scanning"** card: wording, the reported size, and that
-   **Clear Saved Data** actually frees it.
+1. **Re-run the two scans to confirm the warm-cache freeze fix.** The correctness half of this
+   item is **done** — the cache is proven transparent (146 / 229·239 / 0.1498 held exactly).
+   What's outstanding is the fix for the freeze it exposed: scan 2 should now show **pass 3
+   counting up from 0 rather than sitting on it**, with **Stop responsive throughout**, and
+   should finish in a few seconds rather than minutes. Watch the cold scan too — dropping
+   ~13,000 `PHAssetResource` queries should pull the 87s fingerprint pass down noticeably;
+   record the new figure.
+   Still unrecorded: **scan 1's `blur cost split`** (it scrolled off the console last time),
+   which decomposes the cold 149s into real measurement versus failed loads. The warm floor is
+   known: ~13s.
+   While on Home, check the **"Faster scanning"** card: wording, the reported size (**47.2 MB**
+   on this library, not the 24.6 MB the harness predicts), and that **Clear Saved Data**
+   actually frees it.
 2. **Verify the review screens at a large text size on device** (Settings → Display & Brightness
    → Text Size, or Accessibility → Larger Text for the AX range). The M5 pass is verified in the
    simulator only for Onboarding and the Permission Primer; `CandidateRow`, the summary category

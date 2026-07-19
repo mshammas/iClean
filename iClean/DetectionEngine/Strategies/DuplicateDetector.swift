@@ -22,8 +22,14 @@ enum DuplicateDetector {
         let creationDate: Date
         let aspectRatio: Double
         let pixelCount: Int
-        let bytes: Int64
         var isFavorite: Bool { asset.isFavorite }
+        /// **Computed, never stored.** `AssetResourceInfo.estimatedFileSize` is a synchronous
+        /// `PHAssetResource` query costing milliseconds, and size is only ever needed inside
+        /// `makeGroup` — for the few hundred photos that land in a cluster, not for all 13,500.
+        /// Storing it made every fingerprint pay for it: harmless when hidden behind six
+        /// concurrent image decodes, but with a warm descriptor cache there is nothing left to
+        /// hide it behind and it became the whole pass. See the cached loop in `fingerprintAll`.
+        var bytes: Int64 { AssetResourceInfo.estimatedFileSize(for: asset) }
     }
 
     struct Result {
@@ -96,9 +102,18 @@ enum DuplicateDetector {
         // re-read, and file size is a resource lookup rather than a decode.
         let cached = await cache.descriptors(for: assets.map(ScanCacheKey.init))
 
+        // This loop walks the *whole* library, so it reports progress, yields and honours
+        // cancellation like any other stage. On a warm cache it is the only thing between
+        // "Step 3 of 3, 0 of N" and the end of the pass — running it silently left the screen
+        // frozen on 0 with a dead Stop button for as long as it took.
         var needsFingerprinting: [PHAsset] = []
         needsFingerprinting.reserveCapacity(total - cached.count)
-        for asset in assets {
+        for (index, asset) in assets.enumerated() {
+            if index % 250 == 0 {
+                try Task.checkCancellation()
+                onProgress(processed, total, "looking at each photo")
+                await Task.yield()
+            }
             guard let descriptor = cached[asset.localIdentifier] else {
                 needsFingerprinting.append(asset)
                 continue
@@ -209,8 +224,7 @@ enum DuplicateDetector {
                            descriptor: descriptor,
                            creationDate: asset.creationDate ?? .distantPast,
                            aspectRatio: Double(asset.pixelWidth) / Double(height),
-                           pixelCount: asset.pixelWidth * asset.pixelHeight,
-                           bytes: AssetResourceInfo.estimatedFileSize(for: asset))
+                           pixelCount: asset.pixelWidth * asset.pixelHeight)
     }
 
     // MARK: 2 & 3 — Compare and cluster
@@ -318,11 +332,13 @@ enum DuplicateDetector {
             let isNearCertain = entry.distance <= DetectionThresholds.duplicateAutoTickMaxDistance
             let description = isNearCertain ? "Copy of the photo above" : "Looks like the same photo"
             let favouriteNote = member.isFavorite ? " · one of your favourites" : ""
+            // `bytes` is a live PhotoKit query — read it once.
+            let bytes = member.bytes
 
             return Candidate(asset: member.asset,
                              category: .duplicates,
-                             reason: "\(description)\(favouriteNote) · \(ICFormat.fileSize(member.bytes))",
-                             estimatedBytes: member.bytes,
+                             reason: "\(description)\(favouriteNote) · \(ICFormat.fileSize(bytes))",
+                             estimatedBytes: bytes,
                              duplicateGroupID: groupID,
                              detectionScore: entry.distance,
                              // Pre-tick only near-certain copies, and never a favourite.
