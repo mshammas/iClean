@@ -9,7 +9,7 @@ struct OnboardingView: View {
         ICScreen {
             VStack(alignment: .leading, spacing: 12) {
                 Image(systemName: "sparkles")
-                    .font(.system(size: 56))
+                    .icIconSize(56)
                     .foregroundStyle(ICColor.primary)
                     .accessibilityHidden(true)
 

@@ -54,6 +54,7 @@ struct CleanupFlowView: View {
         switch route {
         case .summary:
             ScanSummaryView(viewModel: viewModel,
+                            hasLimitedAccess: hasLimitedAccess,
                             onOpenCategory: { path.append(.category($0)) },
                             onDelete: { path.append(.confirm) },
                             onCheckICloudPhotos: { startScan(includeICloudPhotos: true) })

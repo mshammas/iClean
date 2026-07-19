@@ -10,7 +10,7 @@ struct PermissionDeniedView: View {
         ICScreen {
             VStack(alignment: .leading, spacing: 12) {
                 Image(systemName: "lock.slash")
-                    .font(.system(size: 56))
+                    .icIconSize(56)
                     .foregroundStyle(ICColor.warning)
                     .accessibilityHidden(true)
 

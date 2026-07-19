@@ -9,7 +9,7 @@ struct DeletionResultView: View {
         ICScreen {
             VStack(alignment: .leading, spacing: 12) {
                 Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 64))
+                    .icIconSize(64)
                     .foregroundStyle(ICColor.success)
                     .accessibilityHidden(true)
 

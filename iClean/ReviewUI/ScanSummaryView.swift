@@ -4,12 +4,19 @@ import SwiftUI
 /// drill into a category to tick items, then delete everything ticked in one go.
 struct ScanSummaryView: View {
     @ObservedObject var viewModel: CleanupViewModel
+    /// Under Limited Access the scan only ever saw the photos the user picked, so "we checked
+    /// your library" would be a false reassurance — the wording has to say what was actually
+    /// looked at, or "nothing found" reads as "you're clean" when we simply couldn't look.
+    let hasLimitedAccess: Bool
     let onOpenCategory: (CleanupCategory) -> Void
     let onDelete: () -> Void
     /// Re-runs the scan with iCloud downloads enabled, after the user has agreed.
     let onCheckICloudPhotos: () -> Void
 
     @State private var showingICloudConfirmation = false
+
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .title3) private var cardIconWidth: CGFloat = 44
 
     private var results: ScanResults { viewModel.results ?? .empty }
 
@@ -48,7 +55,9 @@ struct ScanSummaryView: View {
             Text(viewModel.populatedCategories.isEmpty ? "All clean!" : "Here's what we found")
                 .icStyle(.screenTitle)
                 .foregroundStyle(ICColor.primaryText)
-            Text("We checked \(ICFormat.count(results.scannedCount)) items in your library.")
+            Text(hasLimitedAccess
+                 ? "We checked the \(ICFormat.count(results.scannedCount)) items you've shared with iClean. Anything you haven't shared wasn't looked at."
+                 : "We checked \(ICFormat.count(results.scannedCount)) items in your library.")
                 .icStyle(.body)
                 .foregroundStyle(ICColor.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -88,10 +97,12 @@ struct ScanSummaryView: View {
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 12) {
             Image(systemName: "checkmark.seal.fill")
-                .font(.system(size: 56))
+                .icIconSize(56)
                 .foregroundStyle(ICColor.success)
                 .accessibilityHidden(true)
-            Text("We didn't find anything worth deleting. Your library is in good shape.")
+            Text(hasLimitedAccess
+                 ? "We didn't find anything worth deleting in the photos you've shared. If you'd like iClean to check more, share more photos with it."
+                 : "We didn't find anything worth deleting. Your library is in good shape.")
                 .icStyle(.body)
                 .foregroundStyle(ICColor.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -106,31 +117,37 @@ struct ScanSummaryView: View {
         return Button {
             onOpenCategory(category)
         } label: {
-            HStack(spacing: 16) {
+            ICAdaptiveStack(horizontalSpacing: 16, verticalSpacing: 12) {
                 Image(systemName: category.iconName)
-                    .font(.system(size: 34))
+                    .icIconSize(34)
                     .foregroundStyle(ICColor.primary)
-                    .frame(width: 44)
+                    .frame(width: cardIconWidth)
                     .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(category.title)
                         .icStyle(.sectionTitle)
                         .foregroundStyle(ICColor.primaryText)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text("\(ICFormat.count(items.count)) items · \(ICFormat.fileSize(bytes))")
                         .icStyle(.caption)
                         .foregroundStyle(ICColor.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(ticked == 0 ? "None ticked yet" : "\(ICFormat.count(ticked)) ticked")
                         .icStyle(.caption)
                         .foregroundStyle(ticked == 0 ? ICColor.secondaryText : ICColor.destructive)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                Spacer(minLength: 8)
-
-                Image(systemName: "chevron.right")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(ICColor.secondaryText)
-                    .accessibilityHidden(true)
+                // Pure affordance — drop it once stacked rather than let a chevron sit on
+                // its own line pretending to be content.
+                if !dynamicTypeSize.isAccessibilitySize {
+                    Image(systemName: "chevron.right")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(ICColor.secondaryText)
+                        .accessibilityHidden(true)
+                }
             }
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)

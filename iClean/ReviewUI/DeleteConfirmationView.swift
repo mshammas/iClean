@@ -13,7 +13,7 @@ struct DeleteConfirmationView: View {
         ICScreen {
             VStack(alignment: .leading, spacing: 12) {
                 Image(systemName: "trash.circle.fill")
-                    .font(.system(size: 56))
+                    .icIconSize(56)
                     .foregroundStyle(ICColor.destructive)
                     .accessibilityHidden(true)
 

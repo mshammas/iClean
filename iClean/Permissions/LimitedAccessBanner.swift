@@ -11,7 +11,7 @@ struct LimitedAccessBanner: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 28))
+                    .icIconSize(28)
                     .foregroundStyle(ICColor.warning)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {

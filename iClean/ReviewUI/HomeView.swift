@@ -11,7 +11,14 @@ struct HomeView: View {
 
     @StateObject private var viewModel = HomeViewModel()
 
-    private let thumbSide: CGFloat = 72
+    @ScaledMetric(relativeTo: .title3) private var thumbSide: CGFloat = 72
+    @ScaledMetric(relativeTo: .largeTitle) private var totalCountSize: CGFloat = 56
+
+    /// True only once the count has actually loaded — an empty library is a real state to
+    /// explain, but "no photos" must not be shown while we're still counting.
+    private var hasEmptyLibrary: Bool {
+        (viewModel.summary?.totalCount ?? 0) == 0 && viewModel.summary != nil
+    }
 
     var body: some View {
         ICScreen {
@@ -23,13 +30,17 @@ struct HomeView: View {
 
             summaryCard
 
+            if hasEmptyLibrary {
+                emptyLibraryNote
+            }
+
             if !viewModel.recentAssets.isEmpty {
                 recentPreview
             }
         } footer: {
             ICButton(title: "Scan My Photos",
                      systemImage: "magnifyingglass",
-                     isEnabled: (viewModel.summary?.totalCount ?? 0) > 0,
+                     isEnabled: !hasEmptyLibrary && viewModel.summary != nil,
                      action: onScan)
         }
         .task(id: refreshToken) { await viewModel.load() }
@@ -56,8 +67,10 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 16) {
             if let summary = viewModel.summary {
                 Text(ICFormat.count(summary.totalCount))
-                    .font(.system(size: 56, weight: .bold, design: .rounded))
+                    .font(.system(size: totalCountSize, weight: .bold, design: .rounded))
                     .foregroundStyle(ICColor.primaryText)
+                    .minimumScaleFactor(0.6)
+                    .lineLimit(1)
                     .accessibilityLabel("\(summary.totalCount) items in your library")
                 Text("items in total")
                     .icStyle(.body)
@@ -65,7 +78,7 @@ struct HomeView: View {
 
                 Divider()
 
-                HStack(spacing: 24) {
+                ICAdaptiveStack(horizontalSpacing: 24, verticalSpacing: 12) {
                     statItem(count: summary.photoCount, label: "Photos", systemImage: "photo")
                     statItem(count: summary.videoCount, label: "Videos", systemImage: "film")
                 }
@@ -102,6 +115,17 @@ struct HomeView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(count) \(label)")
+    }
+
+    /// A library with nothing in it isn't an error, but a greyed-out "Scan My Photos" with no
+    /// explanation reads like one. Say why the button can't be pressed.
+    private var emptyLibraryNote: some View {
+        ICInfoRow(systemImage: "photo.on.rectangle",
+                  title: hasLimitedAccess ? "No photos shared yet" : "No photos yet",
+                  detail: hasLimitedAccess
+                      ? "You haven't shared any photos with iClean, so there's nothing to look through. Tap \"Choose More Photos\" above to pick some."
+                      : "There are no photos or videos on this iPhone yet, so there's nothing for iClean to look through.",
+                  tint: ICColor.secondaryText)
     }
 
     private var recentPreview: some View {

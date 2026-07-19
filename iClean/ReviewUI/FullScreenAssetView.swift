@@ -231,7 +231,7 @@ private struct FullScreenAssetPage: View {
         } else if loadFailed {
             VStack(spacing: 16) {
                 Image(systemName: "exclamationmark.triangle")
-                    .font(.system(size: 48))
+                    .icIconSize(48)
                 Text("This item couldn't be loaded.")
                     .icStyle(.body)
             }

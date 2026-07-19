@@ -13,6 +13,8 @@ struct DuplicateReviewView: View {
     /// The group awaiting confirmation for an immediate delete.
     @State private var groupPendingDeletion: DuplicateGroup?
 
+    @ScaledMetric(relativeTo: .title3) private var thumbSide: CGFloat = 64
+
     private var groups: [DuplicateGroup] { viewModel.duplicateGroups }
 
     var body: some View {
@@ -30,7 +32,7 @@ struct DuplicateReviewView: View {
             if groups.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
                     Image(systemName: "checkmark.seal.fill")
-                        .font(.system(size: 56))
+                        .icIconSize(56)
                         .foregroundStyle(ICColor.success)
                         .accessibilityHidden(true)
                     Text("You've been through all the duplicates. One copy of each photo has been kept.")
@@ -130,11 +132,11 @@ struct DuplicateReviewView: View {
         Button {
             present(group, startingAt: group.keeper.localIdentifier)
         } label: {
-            HStack(spacing: 16) {
-                AssetThumbnailView(asset: group.keeper, side: 64)
+            ICAdaptiveStack(horizontalSpacing: 16, verticalSpacing: 12) {
+                AssetThumbnailView(asset: group.keeper, side: thumbSide)
                     .overlay(alignment: .topLeading) {
                         Image(systemName: "magnifyingglass")
-                            .font(.system(size: 12, weight: .bold))
+                            .icIconSize(12, weight: .bold)
                             .foregroundStyle(.white)
                             .padding(5)
                             .background(.black.opacity(0.55), in: Circle())
@@ -149,9 +151,9 @@ struct DuplicateReviewView: View {
                     Text(ICFormat.fileSize(group.keeperBytes))
                         .icStyle(.caption)
                         .foregroundStyle(ICColor.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-
-                Spacer(minLength: 0)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .contentShape(Rectangle())
         }

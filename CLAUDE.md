@@ -151,6 +151,11 @@ iClean/                              repo root
       DesignSystem/
         Colors.swift                 ICColor semantic palette
         Typography.swift             ICTextStyle + .icStyle() — large, rounded, Dynamic Type
+        AccessibleLayout.swift       `ICAdaptiveStack` (a row that becomes a column at the
+                                     accessibility text sizes) and `.icIconSize(_:weight:)`
+                                     (decorative-icon size that scales with Dynamic Type).
+                                     Use these rather than a bare `HStack` for icon·text·control
+                                     rows, and rather than `.font(.system(size:))` for symbols.
         Components/
           ICButton.swift             large full-width button (primary/secondary/destructive)
           ICInfoRow.swift            icon + title + detail explanatory row
@@ -159,8 +164,8 @@ iClean/                              repo root
 ```
 
 **Not yet built:** the on-disk feature-print cache keyed by `localIdentifier` +
-`modificationDate` (re-scans currently recompute every fingerprint), and the M5/M6 work listed
-under "Current status".
+`modificationDate` (re-scans currently recompute every fingerprint), and the remaining M6 items
+listed under "Current status".
 
 ### Architecture conventions
 - One `@MainActor ObservableObject` ViewModel per screen (screens create their own).
@@ -168,6 +173,15 @@ under "Current status".
 - Cross-cutting state (onboarding + permission) lives in `AppState`, injected via `.environmentObject`.
 - No DI framework; a small shared-object approach is enough.
 - Design-system types are prefixed `IC` (ICColor, ICButton, ICScreen, ICTextStyle…).
+- **Accessibility sizes are a supported layout, not a fallback.** Two rules follow from it, and
+  both are easy to break by writing ordinary-looking SwiftUI:
+  1. Never size a symbol with `.font(.system(size:))` — that is frozen and ignores Dynamic Type,
+     so a 56pt hero icon becomes a speck beside AX5 text. Use `.icIconSize(_:)`.
+  2. Never lay out icon·text·control as a plain `HStack` — at AX sizes the text column collapses
+     to a few characters per line. Use `ICAdaptiveStack`, which switches to a `VStack` from AX1.
+  Text that carries numbers (counts, sizes) also needs
+  `.fixedSize(horizontal: false, vertical: true)` so it wraps rather than truncates — a
+  truncated "Delete 262 items, free ~4.3 GB" hides exactly what the user is confirming.
 
 ---
 
@@ -215,7 +229,7 @@ xcodebuild -project iClean.xcodeproj -scheme iClean \
 # Run in a simulator:
 SIM=$(xcrun simctl list devices available | grep -m1 "iPhone 17 (" | grep -oE "[0-9A-F-]{36}")
 xcrun simctl boot $SIM; xcrun simctl install $SIM <path-to-iClean.app>
-xcrun simctl launch $SIM com.example.iClean
+xcrun simctl launch $SIM com.shammas.iClean
 xcrun simctl io $SIM screenshot shot.png     # then read the PNG to inspect the UI
 ```
 
@@ -225,10 +239,22 @@ xcrun simctl io $SIM screenshot shot.png     # then read the PNG to inspect the 
 `PHPhotoLibrary.authorizationStatus(for: .readWrite)` report `.authorized` — the app still shows
 the primer. To reach Home in a simulator someone must tap "Allow Access" manually (AppleScript
 taps need assistive access, which isn't available). Use
-`xcrun simctl spawn $SIM defaults write com.example.iClean hasCompletedOnboarding -bool true`
+`xcrun simctl spawn $SIM defaults write com.shammas.iClean hasCompletedOnboarding -bool true`
 to skip onboarding (writing the plist from the host does *not* work — cfprefsd owns it), and
 `xcrun simctl addmedia $SIM <files>` to populate the library.
 **Real photo-library behavior must still be verified on a physical iPhone.**
+
+⚠️ **Do not `simctl erase` / `uninstall` to fix a launch failure.** Photo authorization is the
+one piece of simulator state that cannot be restored from the command line, so erasing costs a
+manual "Allow Access" tap to get back to Home — and that tap is the only way back.
+(This was learned the hard way on 2026-07-19: the iPhone 17 simulator had authorization granted
+and 12 test items, and an erase threw both away.) When `simctl launch` fails with
+`FBSOpenApplicationServiceErrorDomain code=4`, the cause is almost always the **bundle ID**, not
+simulator state — this project installs as **`com.shammas.iClean`**, not the `com.example.iClean`
+in the project's default settings. Confirm with `xcrun simctl listapps $SIM | grep -i clean`.
+
+To test Dynamic Type: `xcrun simctl ui $SIM content_size accessibility-extra-extra-extra-large`
+(AX5), `accessibility-medium` (AX1), or `large` (default). Relaunch the app to pick it up.
 
 ---
 
@@ -347,13 +373,19 @@ after each scan.
   prints coverage + a score histogram after each scan — the tool to use for any re-tuning.
   Supporting changes: `CategoryReviewView` uses `LazyVStack`; blurry results sort
   **blurriest-first** via `Candidate.detectionScore`, so debatable calls sit at the list's end.
-- **M4 — Duplicate detection: DONE. Scan is device-verified; the review UI is not.**
+- **M4 — Duplicate detection: DONE, fully device-verified (scan and review UI).**
   Feature-print detection, aspect/time pre-filtering, union-find clustering with keeper
   verification, and a grouped review screen. Scanning is now three passes.
-  ⚠️ **This is the only category that pre-ticks items for deletion.** The pre-ticked groups have
-  **not yet been eyeballed on device** — that is the single most important outstanding check:
-  confirm each pre-ticked copy really is the same photo, and that no favourite is pre-ticked.
-  The `#if DEBUG` block prints group counts and a match-distance histogram.
+  ⚠️ **This is the only category that pre-ticks items for deletion.**
+  **Reviewed on device by the user (2026-07-19) — reported all good.** That closes what was the
+  project's single biggest open risk: the pre-ticked copies are genuine duplicates and no
+  favourite is pre-ticked. The `#if DEBUG` block prints group counts and a match-distance
+  histogram if it ever needs re-checking.
+  ⚠️ Still unanswered: whether the **0.05–0.15 band** (grouped but deliberately left unticked)
+  holds real duplicates or distinct shots. That judgement decides whether
+  `duplicateAutoTickMaxDistance` should move up from 0.05 — worth asking the user next time they
+  are in the duplicates screen. The current value is the safe end regardless, so this is a
+  recall question, not a safety one.
   ⚠️ **Known cost:** the duplicate pass loads every photo again, on top of the blur pass. A
   combined single-load pass would cut the pixel work ~45% if scans feel slow.
   **Device test (2026-07-19) — appeared frozen** on "Step 2 of 3, 11,839 of 11,839". Three
@@ -394,7 +426,34 @@ after each scan.
     review can be done in pieces. All deletion funnels through one private
     `CleanupViewModel.delete(ids:)`, which records `deletedIDs`; every derived list filters
     those out so deleting mid-review can't leave rows pointing at photos that are gone.
-- **M5/M6 — Progress, cancellation, accessibility pass, edge cases:** not started.
+- **M5 — Progress, cancellation, accessibility pass: DONE.**
+  Progress and cancellation were already delivered under M3/M4 (`ScanProgress` with phase +
+  `detail` sub-step, Stop honoured through fingerprinting *and* clustering). This milestone was
+  therefore the **Dynamic Type pass**, which had never been done — VoiceOver labelling was
+  already thorough, but nothing in the app responded to text size:
+  - Added `ICAdaptiveStack` and `.icIconSize(_:)` (see Architecture conventions) and applied
+    them across every icon·text·control row: `ICInfoRow`, `CandidateRow`, the summary category
+    cards, the duplicate keeper row, and Home's photo/video stats.
+  - `ICButton` labels now wrap instead of truncating, its minimum height scales, and its icon is
+    dropped at accessibility sizes so the label gets the full width.
+  - Thumbnails (`CandidateRow`, keeper row, Home grid) and Home's big library count now scale.
+  **Verified in the simulator at AX1 and AX5** (Onboarding, Permission Primer) — info rows stack
+  correctly, hero icons scale, button labels wrap, and the default text size is unchanged.
+  ⚠️ The **review screens** (`CandidateRow`, category cards, duplicate groups) are
+  **compile-verified only at accessibility sizes** — they sit behind photo authorization, which
+  cannot be granted in the simulator (see Simulator limitations). Check those on device.
+- **M6 — Edge cases: PARTIALLY DONE, compile-verified only.**
+  - `CategoryReviewView` had **no empty state** — once a category emptied it showed a heading, a
+    "Tick All" button and nothing else. It now shows a completion state, and the footer count
+    and Tick All are hidden when there's nothing left.
+  - **Limited Access wording.** `ScanSummaryView` now takes `hasLimitedAccess` and says it only
+    checked the shared subset. Previously "We checked N items in your library" and "Your library
+    is in good shape" were shown verbatim under Limited Access, which turns "we couldn't look"
+    into a false all-clear — the same failure mode the blur coverage note exists to avoid.
+  - **Empty library.** Home explained nothing when the library was empty; the Scan button was
+    just disabled. It now says why (with different wording under Limited Access).
+  - **Still outstanding:** re-scan-after-deletion edge cases, and iCloud-not-downloaded handling
+    beyond the existing opt-in.
 
 ---
 
@@ -402,19 +461,28 @@ after each scan.
 
 In rough priority order:
 
-1. **Verify the duplicate review on device** — highest value, because it's the only pre-ticking
-   category and its UI has never been exercised. Check pre-ticked copies really are duplicates,
-   that no favourite is pre-ticked, and that the keeper swap and per-group delete behave.
+Everything at the top of this list is a **device check** — the code below it is written but
+unexercised, and stacking more on top of unverified UI is the pattern to avoid here.
+
+1. **Verify the review screens at a large text size on device** (Settings → Display & Brightness
+   → Text Size, or Accessibility → Larger Text for the AX range). The M5 pass is verified in the
+   simulator only for Onboarding and the Permission Primer; `CandidateRow`, the summary category
+   cards and the duplicate group cards sit behind photo authorization, which the simulator
+   cannot grant. Check the tick boxes are still reachable and rows still read as rows.
 2. **Verify the reworked full-screen viewer** — photo fully visible between the bars, swiping
    feels smooth, and the two buttons read distinctly.
-3. **The iCloud opt-in ("Check Those Too") has never been run.** Needs a Wi-Fi test, and a check
+3. **Verify the new M6 states** — empty category after deleting everything in it, and the
+   Limited Access wording (share only a few photos with iClean, then scan).
+4. **The iCloud opt-in ("Check Those Too") has never been run.** Needs a Wi-Fi test, and a check
    that Stop still responds mid-download.
-4. **M5/M6** — accessibility pass at the largest Dynamic Type sizes, empty/error states,
-   re-scan edge cases.
-5. *Optional:* merge the blur and duplicate passes into a single image load (~45% less pixel
+5. **Finish M6** — re-scan-after-deletion edge cases.
+6. **Ask about the 0.05–0.15 duplicate band** while in the duplicates screen: are those genuine
+   duplicates or distinct shots? That answer decides whether `duplicateAutoTickMaxDistance`
+   should rise above 0.05.
+7. *Optional:* merge the blur and duplicate passes into a single image load (~45% less pixel
    work). Deliberately not done — scan time is currently acceptable (~66s of fingerprinting on a
    17k library) and it isn't worth destabilising the highest-stakes code for speed.
-6. *Optional:* the on-disk feature-print cache, so re-scans don't recompute every fingerprint.
+8. *Optional:* the on-disk feature-print cache, so re-scans don't recompute every fingerprint.
 
 ## Repository
 

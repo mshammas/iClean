@@ -9,9 +9,26 @@ struct CategoryReviewView: View {
     /// The item being viewed full screen, if any.
     @State private var viewingSelection: FullScreenSelection?
 
+
     private var candidates: [Candidate] { viewModel.candidates(in: category) }
     private var allSelected: Bool { viewModel.selection.allSelected(in: candidates) }
     private var selectedCount: Int { viewModel.selection.selectedCount(in: candidates) }
+
+    /// Reachable once everything in the category has been deleted — the lists are derived
+    /// live from `deletedIDs`, so a category can empty out underneath the user mid-review.
+    /// Without this the screen would show a heading, a "Tick All" button and nothing else.
+    private var emptyState: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Image(systemName: "checkmark.seal.fill")
+                .icIconSize(56)
+                .foregroundStyle(ICColor.success)
+                .accessibilityHidden(true)
+            Text("Nothing left here. You've dealt with everything in \(category.title).")
+                .icStyle(.body)
+                .foregroundStyle(ICColor.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
 
     var body: some View {
         ICScreen {
@@ -25,36 +42,43 @@ struct CategoryReviewView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            ICButton(title: allSelected ? "Untick All" : "Tick All",
-                     systemImage: allSelected ? "circle" : "checkmark.circle",
-                     role: .secondary) {
-                viewModel.setAll(in: category, selected: !allSelected)
-            }
+            if candidates.isEmpty {
+                emptyState
+            } else {
+                ICButton(title: allSelected ? "Untick All" : "Tick All",
+                         systemImage: allSelected ? "circle" : "checkmark.circle",
+                         role: .secondary) {
+                    viewModel.setAll(in: category, selected: !allSelected)
+                }
 
-            // LazyVStack, not VStack: a category can hold thousands of items, and an eager
-            // stack would build every row — and fire every thumbnail request — at once,
-            // swamping PhotoKit's decoder. Lazily built rows only load what's on screen.
-            LazyVStack(spacing: 0) {
-                ForEach(candidates) { candidate in
-                    CandidateRow(candidate: candidate,
-                                 isSelected: viewModel.selection.isSelected(candidate.id),
-                                 onToggle: { viewModel.toggle(candidate) },
-                                 onViewFullScreen: {
-                                     viewingSelection = FullScreenSelection(
-                                         single: FullScreenTarget(candidate: candidate))
-                                 })
-                    if candidate.id != candidates.last?.id {
-                        Divider()
+                // LazyVStack, not VStack: a category can hold thousands of items, and an eager
+                // stack would build every row — and fire every thumbnail request — at once,
+                // swamping PhotoKit's decoder. Lazily built rows only load what's on screen.
+                LazyVStack(spacing: 0) {
+                    ForEach(candidates) { candidate in
+                        CandidateRow(candidate: candidate,
+                                     isSelected: viewModel.selection.isSelected(candidate.id),
+                                     onToggle: { viewModel.toggle(candidate) },
+                                     onViewFullScreen: {
+                                         viewingSelection = FullScreenSelection(
+                                             single: FullScreenTarget(candidate: candidate))
+                                     })
+                        if candidate.id != candidates.last?.id {
+                            Divider()
+                        }
                     }
                 }
             }
         } footer: {
-            Text(selectedCount == 0
-                 ? "Nothing ticked in \(category.title)"
-                 : "\(ICFormat.count(selectedCount)) ticked in \(category.title)")
-                .icStyle(.bodyBold)
-                .foregroundStyle(selectedCount == 0 ? ICColor.secondaryText : ICColor.primaryText)
-                .frame(maxWidth: .infinity)
+            if !candidates.isEmpty {
+                Text(selectedCount == 0
+                     ? "Nothing ticked in \(category.title)"
+                     : "\(ICFormat.count(selectedCount)) ticked in \(category.title)")
+                    .icStyle(.bodyBold)
+                    .foregroundStyle(selectedCount == 0 ? ICColor.secondaryText : ICColor.primaryText)
+                    .frame(maxWidth: .infinity)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .navigationTitle(category.title)
         .navigationBarTitleDisplayMode(.inline)

@@ -11,7 +11,7 @@ struct PermissionPrimerView: View {
         ICScreen {
             VStack(alignment: .leading, spacing: 12) {
                 Image(systemName: "lock.shield")
-                    .font(.system(size: 56))
+                    .icIconSize(56)
                     .foregroundStyle(ICColor.primary)
                     .accessibilityHidden(true)
 

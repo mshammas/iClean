@@ -33,19 +33,31 @@ struct ICButton: View {
     var isEnabled: Bool = true
     let action: () -> Void
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// Grows with the text, so the button stays proportionate rather than becoming a thin
+    /// strip wrapped around four lines of very large type.
+    @ScaledMetric(relativeTo: .title3) private var minHeight: CGFloat = 60
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                if let systemImage {
+                // The icon is decoration; at accessibility sizes the label needs the width
+                // more than the button needs a symbol.
+                if let systemImage, !dynamicTypeSize.isAccessibilitySize {
                     Image(systemName: systemImage)
                         .imageScale(.large)
                 }
                 Text(title)
                     .icStyle(.button)
+                    .multilineTextAlignment(.center)
+                    // Titles carry counts and sizes ("Delete 262 items") — they must wrap
+                    // rather than truncate, or the user can't tell what they're confirming.
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity)
-            .frame(minHeight: 60)
+            .frame(minHeight: minHeight)
             .padding(.vertical, 6)
+            .padding(.horizontal, 12)
             .foregroundStyle(role.foreground)
             .background(role.background)
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
