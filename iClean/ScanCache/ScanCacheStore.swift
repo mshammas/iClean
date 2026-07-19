@@ -263,15 +263,23 @@ actor ScanCacheStore {
             }
             removed += stale.count
         }
-        if removed > 0 { _ = exec("VACUUM;") }
+        if removed > 0 {
+            _ = exec("VACUUM;")
+            _ = exec("PRAGMA wal_checkpoint(TRUNCATE);")
+        }
         return removed
     }
 
-    /// Everything the cache holds. Backs the user-facing "Clear cached scan data".
+    /// Everything the cache holds. Backs the user-facing "Clear Saved Data".
+    ///
+    /// Checkpoints as well as vacuuming: the UI tells the user this frees a specific number of
+    /// megabytes, and in WAL mode the pages live on in the sidecar until it's truncated. Space
+    /// the user was promised has to actually come back.
     func clear() {
         guard open() else { return }
         _ = exec("DELETE FROM blur; DELETE FROM print;")
         _ = exec("VACUUM;")
+        _ = exec("PRAGMA wal_checkpoint(TRUNCATE);")
     }
 
     /// Bytes on disk, including the WAL sidecar — what the user would see in iPhone Storage.

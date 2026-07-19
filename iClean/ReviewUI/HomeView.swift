@@ -10,6 +10,7 @@ struct HomeView: View {
     let onScan: () -> Void
 
     @StateObject private var viewModel = HomeViewModel()
+    @State private var showingClearCacheConfirmation = false
 
     @ScaledMetric(relativeTo: .title3) private var thumbSide: CGFloat = 72
     @ScaledMetric(relativeTo: .largeTitle) private var totalCountSize: CGFloat = 56
@@ -36,6 +37,10 @@ struct HomeView: View {
 
             if !viewModel.recentAssets.isEmpty {
                 recentPreview
+            }
+
+            if let cacheBytes = viewModel.cacheBytes {
+                cacheNote(bytes: cacheBytes)
             }
         } footer: {
             ICButton(title: "Scan My Photos",
@@ -126,6 +131,39 @@ struct HomeView: View {
                       ? "You haven't shared any photos with iClean, so there's nothing to look through. Tap \"Choose More Photos\" above to pick some."
                       : "There are no photos or videos on this iPhone yet, so there's nothing for iClean to look through.",
                   tint: ICColor.secondaryText)
+    }
+
+    /// Accounts for the space iClean itself uses.
+    ///
+    /// An app that asks people to delete photos to save space has no business quietly using
+    /// tens of megabytes without saying so. Deliberately understated though — it sits at the
+    /// bottom, appears only once there's something to report, and is worded as a benefit with
+    /// a cost rather than a warning. Clearing is safe: it costs a slower next scan, nothing
+    /// more, which is why the confirmation explains rather than cautions.
+    private func cacheNote(bytes: Int64) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ICInfoRow(systemImage: "bolt.badge.clock",
+                      title: "Faster scanning",
+                      detail: "iClean remembers what it already checked, so scanning again is much quicker. This uses \(ICFormat.fileSize(bytes)) on your iPhone.",
+                      tint: ICColor.secondaryText)
+
+            ICButton(title: "Clear Saved Data",
+                     systemImage: "trash",
+                     role: .secondary) {
+                showingClearCacheConfirmation = true
+            }
+        }
+        .padding(16)
+        .background(ICColor.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .alert("Clear saved scanning data?", isPresented: $showingClearCacheConfirmation) {
+            Button("Keep It", role: .cancel) {}
+            Button("Clear") {
+                Task { await viewModel.clearCache() }
+            }
+        } message: {
+            Text("This frees \(ICFormat.fileSize(bytes)). Your photos are not affected — nothing is deleted from your library. The next scan will simply take longer, because iClean will check everything again from scratch.")
+        }
     }
 
     private var recentPreview: some View {

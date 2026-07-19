@@ -75,6 +75,10 @@ folder.
 iClean/                              repo root
   CLAUDE.md                          this file
   iClean.xcodeproj/                  hand-authored project (synchronized groups)
+  Tools/ScanCacheHarness/            standalone macOS test harness for the scan cache
+                                     (run.sh). OUTSIDE iClean/ on purpose — the synchronized
+                                     group would otherwise compile it into the app.
+
   iClean/                            all source (synchronized into the target)
     iCleanApp.swift                  @main entry
     App/
@@ -533,6 +537,19 @@ after each scan.
   `ScanCacheVersion.descriptor` (which invalidates the cache rather than degrading distances).
   ⚠️ **Next device run:** scan 2 should reuse ~13,530 descriptors and drop fingerprinting from
   87s to about a second. **Groups/extras must stay 229/239 and max distance 0.1498.**
+- **M7 phase 6 — cache visibility: DONE, compile-verified. NOT yet device-verified.**
+  Home gains a quiet card at the bottom: "Faster scanning · iClean remembers what it already
+  checked… This uses N MB", with **Clear Saved Data** behind an explaining (not warning) alert,
+  since clearing costs only a slower next scan. **Hidden below 1 MB**, so a fresh install shows
+  nothing and the user is never asked to think about a rounding error.
+  This is the honesty counterweight to an app that asks people to delete things to save space:
+  it accounts for what it uses, without making a feature of it.
+  `clear()` and `prune()` now checkpoint the WAL after vacuuming — the alert promises a
+  specific number of megabytes, and in WAL mode the pages survive in the sidecar otherwise.
+  Verified by harness: 24.6 MB → 12.3 MB after pruning half → 0.09 MB after clear, store still
+  usable afterwards.
+  ⚠️ The card sits behind photo authorization, so the **simulator cannot show it** — check the
+  wording and the Dynamic Type layout on device.
 
 ---
 
@@ -618,7 +635,7 @@ failed loads are re-attempted every scan by design (see "cache successes only").
 
 **Phases.** 1 ✅ pin revision + `FeatureDescriptor` · 2 ✅ blur timing · 3 ✅ cache store
 (SQLite, versioning, pruning, backup exclusion) · 4 ✅ wire blur scores · 5 ✅ wire descriptors
-· 6 storage visibility + "Clear cached scan data".
+· 6 ✅ storage visibility + "Clear Saved Data". **M7 complete pending device verification.**
 
 **Wiring pattern** (follow it for phase 5): settle the free metadata skips first so they never
 occupy a cache lookup or a row; ask the cache for the remainder; measure only the misses; store
@@ -626,26 +643,28 @@ successes only. Keep classification separable from measurement — `BlurDetector
 `outcome(for:sharpness:)` rather than duplicating it, so the cached and measured paths are the
 same code and cannot drift apart. That property is what makes the cache safe to trust.
 
-**Testing the store.** There is no test target in this project, so `ScanCacheStore` is
-exercised by compiling it into a standalone macOS harness alongside `FeatureDescriptor`,
-`ScanCacheVersion` and `DetectionThresholds`:
+**Testing the store.** There is no test target, so the cache is checked by a standalone macOS
+harness that compiles the **real app sources**:
 
 ```bash
-swiftc -O main.swift \
-  iClean/ScanCache/ScanCacheStore.swift iClean/ScanCache/ScanCacheVersion.swift \
-  iClean/DetectionEngine/FeatureDescriptor.swift \
-  iClean/DetectionEngine/DetectionThresholds.swift -o cachetest && ./cachetest
+./Tools/ScanCacheHarness/run.sh      # 26 checks, ~20s
 ```
 
-Covered: empty-store misses, blur and descriptor round-trips, staleness by modification date,
-fp16 losslessness end-to-end (values *and* distance identical), persistence across reopen,
-prune, per-table version invalidation, page size, clear, and graceful degradation on an
-unwritable directory. Re-run it after any change to the store.
+It lives outside `iClean/` deliberately — the synchronized group would otherwise compile it
+into the app. Run it after any change to `ScanCacheStore`, `ScanCacheVersion`, or
+`FeatureDescriptor`'s encoding. Four sections:
 
-A second harness (same compile line, different `main.swift`) generates **real Vision feature
-prints** and checks that a cache round-trip leaves every pairwise distance and every
-grouping/auto-tick verdict bit-identical. That is the property clustering depends on, so run it
-after any change to `FeatureDescriptor` or the descriptor encoding.
+1. **Store correctness** — round-trips, staleness by modification date, reopen, prune,
+   per-table version invalidation, page size.
+2. **Degradation** — an unwritable directory must yield empty reads and no-op writes, never an
+   error. This is the property that keeps a broken cache from breaking a scan.
+3. **Real Vision descriptors** — generates genuine feature prints, pushes them through the
+   cache, and asserts every pairwise distance *and* every grouping/auto-tick verdict is
+   bit-identical. Also re-checks that `FeatureDescriptor` matches `computeDistance` and that
+   real elements are fp16-representable. This is the section that makes the cache safe to trust
+   in the pre-ticking path.
+4. **Scale** — 13,530 photos with realistic 43-char identifiers: write 0.14s, read 0.02s,
+   24.6 MB, and confirmation that prune and clear genuinely reclaim disk space.
 
 **Re-scan UX: transparent.** No new screens or concepts — the scan simply finishes faster.
 
