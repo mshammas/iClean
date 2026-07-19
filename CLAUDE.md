@@ -500,11 +500,24 @@ after each scan.
   did not shift** — median 1388 → 1390, `≤100` 3.7% → 3.5%, same distribution shape. Together
   with the bit-exact verification against Vision, the L2 swap and revision pin are clean.
   **Confirmed by the user (2026-07-19): they did delete duplicates during the M4 review.**
-- **M7 phase 3 — cache store: DONE, harness-tested. Not yet wired in.**
+- **M7 phase 3 — cache store: DONE, harness-tested.**
   `ScanCacheStore` (SQLite) + `ScanCacheVersion`, plus `FeatureDescriptor.halfPrecisionData`.
-  Nothing reads or writes the cache yet — that is phases 4 and 5 — so scan behaviour is
-  unchanged and this phase cannot have regressed anything. Measured at 13.5k photos:
-  **24.6 MB on disk, 0.02s to read every descriptor back** against 87s to recompute them.
+  Measured at 13.5k photos: **24.6 MB on disk, 0.02s to read every descriptor back** against
+  87s to recompute them.
+- **M7 phase 4 — blur scores cached: DONE, compile-verified. NOT yet device-verified.**
+  The blur pass now settles metadata-only skips first (free, never cached), asks the cache for
+  the rest, and measures only the misses. `BlurDetector` gained `isEligible(_:)` and
+  `outcome(for:sharpness:)` so **classification is separable from measurement** — `analyse`
+  now calls `outcome` itself, so the cached and measured paths are literally the same code and
+  cannot drift. `record(_:into:)` likewise merges the two paths' bookkeeping.
+  Only successes are stored (`Outcome.sharpnessScore` is the cacheable test), so the ~4,975
+  photos with no local 800px rendition are retried every scan by design.
+  Pruning is **skipped under Limited Access** — the fetch only returns shared photos there, so
+  pruning to it would discard good measurements and thrash on every change to the shared set.
+  Adds a `#if DEBUG` cost split (measured vs failed vs cached) to finally decompose the 149s.
+  ⚠️ **Next device run:** expect scan 1 unchanged (~149s, cold cache), scan 2 to reuse ~4,175
+  scores. `blurry found` must stay **146** across both — a different number means the cached
+  and measured paths disagree, which is the one thing that would make this unsafe.
 
 ---
 
@@ -589,8 +602,14 @@ per-outcome timing before assuming how much of the blur pass a cache actually re
 failed loads are re-attempted every scan by design (see "cache successes only").
 
 **Phases.** 1 ✅ pin revision + `FeatureDescriptor` · 2 ✅ blur timing · 3 ✅ cache store
-(SQLite, versioning, pruning, backup exclusion) · 4 wire blur scores · 5 wire descriptors
+(SQLite, versioning, pruning, backup exclusion) · 4 ✅ wire blur scores · 5 wire descriptors
 · 6 storage visibility + "Clear cached scan data".
+
+**Wiring pattern** (follow it for phase 5): settle the free metadata skips first so they never
+occupy a cache lookup or a row; ask the cache for the remainder; measure only the misses; store
+successes only. Keep classification separable from measurement — `BlurDetector.analyse` calls
+`outcome(for:sharpness:)` rather than duplicating it, so the cached and measured paths are the
+same code and cannot drift apart. That property is what makes the cache safe to trust.
 
 **Testing the store.** There is no test target in this project, so `ScanCacheStore` is
 exercised by compiling it into a standalone macOS harness alongside `FeatureDescriptor`,

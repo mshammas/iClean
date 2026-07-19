@@ -14,6 +14,7 @@ import Photos
 actor DetectionCoordinator {
 
     private let fetcher = PhotoLibraryFetcher()
+    private let cache = ScanCacheStore.shared
 
     /// Scans the library and returns everything worth reviewing.
     ///
@@ -93,6 +94,26 @@ actor DetectionCoordinator {
         }
         candidates.append(contentsOf: duplicatePass.groups.flatMap(\.extras))
 
+        // Drop cache rows for assets that have left the library, so deleted photos don't keep
+        // paying rent. Done after the passes so a cancelled scan never prunes on partial data.
+        //
+        // **Skipped under Limited Access**, where the fetch only ever returns the photos the
+        // user has shared. Pruning to that subset would discard perfectly good measurements for
+        // everything else, and re-measure them the moment the shared set changes — the cache
+        // would thrash on exactly the flow that's most awkward to sit through. Costs some stale
+        // rows instead, which `prune` clears on the next full-access scan.
+        var pruned = 0
+        if PHPhotoLibrary.authorizationStatus(for: .readWrite) != .limited {
+            let liveIdentifiers = Set(photosForDuplicates.map(\.localIdentifier))
+                .union(photosForSharpness.map(\.localIdentifier))
+            pruned = await cache.prune(keeping: liveIdentifiers)
+        }
+
+        #if DEBUG
+        let cacheCounts = await cache.counts()
+        let cacheBytes = await cache.sizeOnDisk()
+        #endif
+
         #if DEBUG
         // Tuning aid: tells us whether a small blurry list means "library is sharp" or
         // "we couldn't actually look at most of it". Debug-only, never ships.
@@ -104,6 +125,7 @@ actor DetectionCoordinator {
           skipped, no image ........ \(sharpnessPass.couldNotLoad)
           skipped, image too small . \(sharpnessPass.deliveredTooSmall)
           skipped, Portrait mode ... \(sharpnessPass.notEligible)
+          reused from cache ........ \(sharpnessPass.reusedFromCache)
           blurry found ............. \(sharpnessPass.blurry.count)
           blur threshold ........... \(DetectionThresholds.blurVariance)
         \(Self.scoreDistribution(sharpnessPass.scores))
@@ -116,6 +138,11 @@ actor DetectionCoordinator {
           auto-tick threshold ...... \(DetectionThresholds.duplicateAutoTickMaxDistance)
           distance threshold ....... \(DetectionThresholds.duplicateMaxDistance)
         \(Self.matchDistanceSummary(duplicatePass.matchDistances))
+          -- scan cache --
+          blur scores stored ....... \(cacheCounts.blur)
+          descriptors stored ....... \(cacheCounts.descriptors)
+          rows pruned this scan .... \(pruned)
+          on disk .................. \(ICFormat.fileSize(cacheBytes))
         """)
         #endif
 
@@ -136,8 +163,22 @@ actor DetectionCoordinator {
         var notEligible = 0
         /// Every sharpness score we measured, for threshold tuning (Debug only).
         var scores: [Float] = []
+        /// Scores answered from the cache rather than by decoding an image.
+        var reusedFromCache = 0
 
         var unchecked: Int { couldNotLoad + deliveredTooSmall }
+    }
+
+    /// One measured photo, paired with the key its score is cached under.
+    ///
+    /// The outcome alone isn't enough: `.sharp` carries only a score, so the asset it belongs
+    /// to has to travel with it to be storable.
+    private struct BlurMeasurement {
+        let key: ScanCacheKey
+        let outcome: BlurDetector.Outcome
+        /// Seconds this one photo spent in flight. Summed per outcome to decompose the pass —
+        /// see the Debug block in `findBlurryPhotos`.
+        let seconds: Double
     }
 
     #if DEBUG
@@ -202,46 +243,99 @@ actor DetectionCoordinator {
         var processed = 0
         #if DEBUG
         // Matches the fingerprinting heartbeat, so the two passes can be compared directly.
-        // Without it there is no way to know which pass a scan actually spends its time in —
-        // and that decides where caching is worth the storage it costs.
         let startedAt = Date()
+        var secondsMeasuring = 0.0, secondsFailing = 0.0
         #endif
 
-        try await withThrowingTaskGroup(of: BlurDetector.Outcome.self) { group in
-            var next = photos.makeIterator()
+        // MARK: Metadata-only skips
+        //
+        // Portrait shots and the like cost nothing to identify and can never have a cached
+        // score, so they're settled before the cache is touched.
+        var eligible: [PHAsset] = []
+        eligible.reserveCapacity(total)
+        for asset in photos {
+            if BlurDetector.isEligible(asset) {
+                eligible.append(asset)
+            } else {
+                pass.notEligible += 1
+                processed += 1
+            }
+        }
 
-            // Prime the window.
-            for _ in 0..<min(DetectionThresholds.blurMaxConcurrent, total) {
-                guard let asset = next.next() else { break }
-                group.addTask {
-                    await BlurDetector.analyse(asset: asset,
-                                               allowsICloudDownload: includeICloudPhotos)
+        // MARK: Cached scores
+        //
+        // A score is the expensive half (an 800px decode); the verdict is a comparison. So a
+        // cache hit skips the decode entirely and still re-classifies against the *current*
+        // `blurVariance` — retuning the threshold never costs a re-measure.
+        let cachedScores = await cache.blurScores(for: eligible.map(ScanCacheKey.init))
+
+        var needsMeasuring: [PHAsset] = []
+        needsMeasuring.reserveCapacity(eligible.count - cachedScores.count)
+        for asset in eligible {
+            guard let score = cachedScores[asset.localIdentifier] else {
+                needsMeasuring.append(asset)
+                continue
+            }
+            record(BlurDetector.outcome(for: asset, sharpness: score), into: &pass)
+            pass.reusedFromCache += 1
+            processed += 1
+        }
+        onProgress(progress(processed))
+
+        #if DEBUG
+        print("""
+        [iClean] blur cache: \(pass.reusedFromCache) reused · \(needsMeasuring.count) to measure \
+        · \(pass.notEligible) ineligible
+        """)
+        #endif
+
+        // MARK: Measure the rest
+
+        var fresh: [(key: ScanCacheKey, score: Float)] = []
+        fresh.reserveCapacity(needsMeasuring.count)
+
+        try await withThrowingTaskGroup(of: BlurMeasurement.self) { group in
+            var next = needsMeasuring.makeIterator()
+
+            func measure(_ asset: PHAsset) -> @Sendable () async -> BlurMeasurement {
+                let key = ScanCacheKey(asset)
+                return {
+                    let start = Date()
+                    let outcome = await BlurDetector.analyse(asset: asset,
+                                                             allowsICloudDownload: includeICloudPhotos)
+                    return BlurMeasurement(key: key,
+                                           outcome: outcome,
+                                           seconds: Date().timeIntervalSince(start))
                 }
             }
 
-            while let outcome = try await group.next() {
+            // Prime the window.
+            for _ in 0..<min(DetectionThresholds.blurMaxConcurrent, needsMeasuring.count) {
+                guard let asset = next.next() else { break }
+                group.addTask(operation: measure(asset))
+            }
+
+            while let measurement = try await group.next() {
                 try Task.checkCancellation()
 
                 processed += 1
-                switch outcome {
-                case .blurry(let candidate):
-                    pass.blurry.append(candidate)
-                    pass.checked += 1
-                    #if DEBUG
-                    if let score = candidate.detectionScore { pass.scores.append(score) }
-                    #endif
-                case .sharp(let score):
-                    pass.checked += 1
-                    #if DEBUG
-                    pass.scores.append(score)
-                    #endif
-                case .couldNotLoad:
-                    pass.couldNotLoad += 1
-                case .deliveredTooSmall:
-                    pass.deliveredTooSmall += 1
-                case .notEligible:
-                    pass.notEligible += 1   // Portrait shots; not a coverage gap
+                record(measurement.outcome, into: &pass)
+
+                // Successes only: a failed load must never be cached. The set of photos with no
+                // local 800px rendition changes as iOS evicts and restores originals, so
+                // remembering a failure would permanently blind us to a photo that later
+                // becomes checkable.
+                if let score = measurement.outcome.sharpnessScore {
+                    fresh.append((measurement.key, score))
                 }
+
+                #if DEBUG
+                switch measurement.outcome {
+                case .blurry, .sharp: secondsMeasuring += measurement.seconds
+                case .couldNotLoad, .deliveredTooSmall: secondsFailing += measurement.seconds
+                case .notEligible: break
+                }
+                #endif
 
                 if processed % DetectionThresholds.blurProgressInterval == 0 || processed == total {
                     onProgress(progress(processed))
@@ -257,14 +351,50 @@ actor DetectionCoordinator {
 
                 // Top the window back up.
                 if let asset = next.next() {
-                    group.addTask {
-                    await BlurDetector.analyse(asset: asset,
-                                               allowsICloudDownload: includeICloudPhotos)
-                }
+                    group.addTask(operation: measure(asset))
                 }
             }
         }
 
+        await cache.storeBlurScores(fresh)
+
+        #if DEBUG
+        // Decomposes the pass: how much of it is real measurement (cacheable) versus failed
+        // loads (re-attempted every scan by design). These are summed in-flight times across
+        // `blurMaxConcurrent` workers, so they exceed wall clock — the ratio is the point.
+        print(String(format: """
+        [iClean] blur cost split · measured %d in %.0fs (%.0fms each) \
+        · failed %d in %.0fs (%.0fms each) · cached %d
+        """,
+        pass.checked, secondsMeasuring, pass.checked > 0 ? secondsMeasuring / Double(pass.checked) * 1000 : 0,
+        pass.unchecked, secondsFailing, pass.unchecked > 0 ? secondsFailing / Double(pass.unchecked) * 1000 : 0,
+        pass.reusedFromCache))
+        #endif
+
         return pass
+    }
+
+    /// Folds one outcome into the running totals. Shared by the cached and measured paths so
+    /// they can't drift apart.
+    private func record(_ outcome: BlurDetector.Outcome, into pass: inout SharpnessPass) {
+        switch outcome {
+        case .blurry(let candidate):
+            pass.blurry.append(candidate)
+            pass.checked += 1
+            #if DEBUG
+            if let score = candidate.detectionScore { pass.scores.append(score) }
+            #endif
+        case .sharp(let score):
+            pass.checked += 1
+            #if DEBUG
+            pass.scores.append(score)
+            #endif
+        case .couldNotLoad:
+            pass.couldNotLoad += 1
+        case .deliveredTooSmall:
+            pass.deliveredTooSmall += 1
+        case .notEligible:
+            pass.notEligible += 1   // Portrait shots; not a coverage gap
+        }
     }
 }

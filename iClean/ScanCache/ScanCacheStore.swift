@@ -232,8 +232,8 @@ actor ScanCacheStore {
             sqlite3_bind_int64(statement, 2, entry.key.modifiedAt)
             let data = entry.descriptor.halfPrecisionData
             data.withUnsafeBytes { buffer in
-                sqlite3_bind_blob(statement, 3, buffer.baseAddress, Int32(buffer.count),
-                                  SQLITE_TRANSIENT)
+                _ = sqlite3_bind_blob(statement, 3, buffer.baseAddress, Int32(buffer.count),
+                                      SQLITE_TRANSIENT)
             }
         }
     }
