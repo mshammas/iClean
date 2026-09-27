@@ -51,4 +51,4 @@ a new "Last updated" date.
 
 ## Contact
 
-If you have any questions about this policy, contact: **[add your contact email here]**
+If you have any questions about this policy, contact: **mohammed.shammas@gmail.com**
