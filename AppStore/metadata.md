@@ -126,6 +126,8 @@ horror, etc.). Result: **4+**.
 This matches the app's behaviour and the bundled `PrivacyInfo.xcprivacy` (no
 tracking, no collected data types). Everything is processed on-device.
 
+Step-by-step click path for this section: see `AppStore/app-privacy-clickpath.md`.
+
 ---
 
 ## Export compliance
