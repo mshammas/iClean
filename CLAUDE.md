@@ -881,7 +881,12 @@ scaffolding and a quality pass. Status as of 2026-09-27:
 - **Paid Apple Developer Program ($99/yr)** — required to submit at all; currently a free ID.
 - **Privacy policy is hosted** (GitHub Pages) at https://mshammas.github.io/iClean/privacy-policy
   — put that URL in App Store Connect. (Contact email is filled in.)
-- **App Store Connect assets** — screenshots (6.9"/6.5"), description, keywords, support URL,
+- **Screenshots — done.** 7 at 1320×2868 (6.9", the only required iPhone size) in
+  `AppStore/screenshots/` — `raw/` (clean) and `captioned/` (headline + framed, SF Rounded on a
+  blue gradient). Captured on the iPhone 17 Pro Max sim with a 9:41 status bar. They show the
+  **Blurry** category as the example (duplicates/screenshots/large-videos can't be populated in
+  the sim). Upload one set; see that folder's README.
+- **App Store Connect text/metadata** still needed — description, keywords, support URL,
   age-rating questionnaire, and the App Privacy label answers (all "Data Not Collected").
 - **Device-verification debt** (see "Where to pick up" items 1–6): the reworked full-screen
   viewer, M6 edge cases, keeper-promotion safety fix, iCloud opt-in, and review screens at large
