@@ -886,8 +886,11 @@ scaffolding and a quality pass. Status as of 2026-09-27:
   blue gradient). Captured on the iPhone 17 Pro Max sim with a 9:41 status bar. They show the
   **Blurry** category as the example (duplicates/screenshots/large-videos can't be populated in
   the sim). Upload one set; see that folder's README.
-- **App Store Connect text/metadata** still needed — description, keywords, support URL,
-  age-rating questionnaire, and the App Privacy label answers (all "Data Not Collected").
+- **App Store Connect text/metadata — drafted** in `AppStore/metadata.md` (name, subtitle,
+  promo text, keywords, description, release notes, categories, age-rating and App Privacy
+  answers), all within Apple's character limits. Support page is **live** at
+  https://mshammas.github.io/iClean/support (`docs/support.md`). Still need to paste it all into
+  App Store Connect (needs the paid account).
 - **Device-verification debt** (see "Where to pick up" items 1–6): the reworked full-screen
   viewer, M6 edge cases, keeper-promotion safety fix, iCloud opt-in, and review screens at large
   text on device. Duplicate detection **cannot** be exercised in the simulator (Vision/Espresso),
