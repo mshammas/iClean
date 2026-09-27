@@ -74,10 +74,23 @@ folder.
 ```
 iClean/                              repo root
   CLAUDE.md                          this file
-  iClean.xcodeproj/                  hand-authored project (synchronized groups)
-  Tools/ScanCacheHarness/            standalone macOS test harness for the scan cache
-                                     (run.sh). OUTSIDE iClean/ on purpose — the synchronized
-                                     group would otherwise compile it into the app.
+  iClean.xcodeproj/                  hand-authored project (synchronized groups). Two targets:
+                                     the app and iCleanTests. A shared scheme lives in
+                                     xcshareddata/xcschemes/iClean.xcscheme so `xcodebuild test`
+                                     works from a clean checkout.
+  docs/privacy-policy.md             the App Store privacy policy (host it, e.g. GitHub Pages,
+                                     and put the URL in App Store Connect). Has a placeholder
+                                     for the contact email — fill it before publishing.
+  iCleanTests/                       XCTest unit-test target (hosted by the app). OUTSIDE
+                                     iClean/ on purpose — the app's synchronized group would
+                                     otherwise compile the tests into the app. Covers the pure,
+                                     safety-critical logic: FeatureDescriptor distance + fp16
+                                     round-trip, ReviewSelection, ICFormat, and DetectionThresholds
+                                     invariants (e.g. auto-tick ≤ grouping distance). 29 tests.
+  Tools/ScanCacheHarness/            standalone macOS harness for the scan cache (run.sh) — does
+                                     the *scale* and *real-Vision* checks the unit tests can't
+                                     (13.5k-row timings, genuine feature prints). Complements the
+                                     XCTest target, not replaced by it. OUTSIDE iClean/ on purpose.
   Tools/AppIcon/make_icon.py         draws the app icon (Pillow, no dependencies beyond it)
                                      and writes icon-1024.png. The icon is *source*, not an
                                      opaque binary: change a colour or the layout here and
@@ -87,6 +100,11 @@ iClean/                              repo root
 
   iClean/                            all source (synchronized into the target)
     iCleanApp.swift                  @main entry
+    PrivacyInfo.xcprivacy            App Store privacy manifest. Declares no tracking / no data
+                                     collected, and the two required-reason APIs actually used:
+                                     UserDefaults (CA92.1, the onboarding flag) and file
+                                     attributes (C617.1, reading the cache file's own size).
+                                     Auto-bundled by the synchronized group.
     App/
       AppState.swift                 top-level ObservableObject; computes AppStage routing
       RootView.swift                 routes by AppStage; UIKit side effects (settings, limited picker)
@@ -272,9 +290,17 @@ SIM=$(xcrun simctl list devices available | grep -m1 "iPhone 17 (" | grep -oE "[
 xcrun simctl boot $SIM; xcrun simctl install $SIM <path-to-iClean.app>
 xcrun simctl launch $SIM com.shammas.iClean
 xcrun simctl io $SIM screenshot shot.png     # then read the PNG to inspect the UI
+
+# Run the unit tests (builds both targets, runs iCleanTests hosted in the app):
+xcodebuild test -project iClean.xcodeproj -scheme iClean \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' CODE_SIGNING_ALLOWED=NO \
+  2>&1 | grep -E "Test Case.*(passed|failed)|Executed|\*\* TEST"
 ```
 
-**Always compile before handing work back.** The project builds clean in Debug and Release.
+**Always compile before handing work back.** The project builds clean in Debug and Release,
+and `xcodebuild test` is green (29 tests). Run the tests after touching `FeatureDescriptor`,
+`ReviewSelection`, `ICFormat`, or `DetectionThresholds` — and the standalone cache harness
+(`Tools/ScanCacheHarness/run.sh`) after touching the cache.
 
 **Simulator limitations:** `simctl privacy grant photos` does *not* make
 `PHPhotoLibrary.authorizationStatus(for: .readWrite)` report `.authorized` — the app still shows
@@ -830,6 +856,38 @@ phases 4–6. Adding more on top before exercising it is the pattern to avoid he
 9. *Optional:* an integer primary key for the cache tables. Would reclaim ~1.5 MB of the 24.6 MB
    (two TEXT indexes over 43-char identifiers), at the cost of a hash-collision risk or a
    mapping table. Measured and judged not worth it — recorded so it isn't re-investigated.
+
+## App Store submission readiness
+
+The app is functionally complete and largely device-verified; what remained for submission was
+scaffolding and a quality pass. Status as of 2026-09-27:
+
+**Done (code-side, in this repo):**
+- **Privacy manifest** — `iClean/PrivacyInfo.xcprivacy`: no tracking, no data collected, and the
+  two required-reason APIs declared (UserDefaults CA92.1, file attributes C617.1). Verified it
+  bundles into the .app.
+- **Export compliance** — `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO` in both app configs
+  (app uses no non-exempt encryption), so uploads don't prompt for it every time.
+- **Privacy policy** — drafted at `docs/privacy-policy.md`. Honest "collects nothing, on-device
+  only" policy. **Has a placeholder contact email to fill in, and must be hosted at a public URL.**
+- **Unit test target** — `iCleanTests`, 29 tests, green via `xcodebuild test`. Covers the
+  safety-critical pure logic (distance math, fp16 cache round-trip, selection dedup, threshold
+  invariants). This is the first automated test coverage of the app target itself.
+
+**Outstanding — needs the user (money, hosting, a device, or App Store Connect):**
+- **Paid Apple Developer Program ($99/yr)** — required to submit at all; currently a free ID.
+- **Host the privacy policy** and put its URL in App Store Connect (GitHub Pages from `docs/`
+  works). Fill the contact email first.
+- **App Store Connect assets** — screenshots (6.9"/6.5"), description, keywords, support URL,
+  age-rating questionnaire, and the App Privacy label answers (all "Data Not Collected").
+- **Device-verification debt** (see "Where to pick up" items 1–6): the reworked full-screen
+  viewer, M6 edge cases, keeper-promotion safety fix, iCloud opt-in, and review screens at large
+  text on device. Duplicate detection **cannot** be exercised in the simulator (Vision/Espresso),
+  so those paths must be checked on a real iPhone.
+- **Full VoiceOver pass on device.**
+
+The final gate is Apple review, which can't be predicted — but nothing above is a known guideline
+risk; it's completeness, not compliance danger.
 
 ## Repository
 
