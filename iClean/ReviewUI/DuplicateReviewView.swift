@@ -51,7 +51,7 @@ struct DuplicateReviewView: View {
             let ticked = viewModel.selection.selectedCount(in: groups.flatMap(\.extras))
             Text(ticked == 0
                  ? "Nothing ticked in Duplicates"
-                 : "\(ICFormat.count(ticked)) extra copies ticked")
+                 : "\(ICFormat.count(ticked)) extra \(ticked == 1 ? "copy" : "copies") ticked")
                 .icStyle(.bodyBold)
                 .foregroundStyle(ticked == 0 ? ICColor.secondaryText : ICColor.primaryText)
                 .frame(maxWidth: .infinity)
@@ -73,7 +73,8 @@ struct DuplicateReviewView: View {
         } message: { group in
             let ticked = tickedExtras(in: group)
             let bytes = ticked.reduce(Int64(0)) { $0 + $1.estimatedBytes }
-            Text("\(ICFormat.count(ticked.count)) copies will move to Recently Deleted, freeing about \(ICFormat.fileSize(bytes)). You can get them back from the Photos app for 30 days.\n\nThe copy marked as kept stays on your iPhone.")
+            let copyNoun = ticked.count == 1 ? "copy" : "copies"
+            Text("\(ICFormat.count(ticked.count)) \(copyNoun) will move to Recently Deleted, freeing about \(ICFormat.fileSize(bytes)). You can get \(ticked.count == 1 ? "it" : "them") back from the Photos app for 30 days.\n\nThe copy marked as kept stays on your iPhone.")
         }
     }
 

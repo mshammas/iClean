@@ -56,8 +56,8 @@ struct ScanSummaryView: View {
                 .icStyle(.screenTitle)
                 .foregroundStyle(ICColor.primaryText)
             Text(hasLimitedAccess
-                 ? "We checked the \(ICFormat.count(results.scannedCount)) items you've shared with iClean. Anything you haven't shared wasn't looked at."
-                 : "We checked \(ICFormat.count(results.scannedCount)) items in your library.")
+                 ? "We checked the \(ICFormat.items(results.scannedCount)) you've shared with iClean. Anything you haven't shared wasn't looked at."
+                 : "We checked \(ICFormat.items(results.scannedCount)) in your library.")
                 .icStyle(.body)
                 .foregroundStyle(ICColor.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -141,7 +141,7 @@ struct ScanSummaryView: View {
                         .icStyle(.sectionTitle)
                         .foregroundStyle(ICColor.primaryText)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("\(ICFormat.count(items.count)) items · \(ICFormat.fileSize(bytes))")
+                    Text("\(ICFormat.items(items.count)) · \(ICFormat.fileSize(bytes))")
                         .icStyle(.caption)
                         .foregroundStyle(ICColor.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
@@ -169,7 +169,7 @@ struct ScanSummaryView: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(category.title). \(items.count) items, \(ICFormat.fileSize(bytes)). \(ticked) ticked for deletion.")
+        .accessibilityLabel("\(category.title). \(ICFormat.items(items.count)), \(ICFormat.fileSize(bytes)). \(ticked) ticked for deletion.")
         .accessibilityHint("Double tap to review")
         .accessibilityAddTraits(.isButton)
     }
@@ -181,10 +181,13 @@ struct ScanSummaryView: View {
                     .icStyle(.caption)
                     .foregroundStyle(ICColor.secondaryText)
                     .multilineTextAlignment(.center)
+                    // Without this the line truncates ("…you'd like to d…") at large text
+                    // sizes, dropping the key word "delete"; fixedSize makes it wrap instead.
+                    .fixedSize(horizontal: false, vertical: true)
             }
             ICButton(title: viewModel.selectedCount == 0
                         ? "Nothing ticked yet"
-                        : "Delete \(ICFormat.count(viewModel.selectedCount)) items",
+                        : "Delete \(ICFormat.items(viewModel.selectedCount))",
                      systemImage: "trash",
                      role: .destructive,
                      isEnabled: viewModel.selectedCount > 0,

@@ -297,6 +297,21 @@ in the project's default settings. Confirm with `xcrun simctl listapps $SIM | gr
 To test Dynamic Type: `xcrun simctl ui $SIM content_size accessibility-extra-extra-extra-large`
 (AX5), `accessibility-medium` (AX1), or `large` (default). Relaunch the app to pick it up.
 
+⚠️ **Duplicate detection cannot run in the simulator at all.** `VNGenerateImageFeaturePrintRequest`
+needs Apple's Espresso neural engine, which the simulator can't initialise —
+`handler.perform` throws `"Failed to create espresso context."` for **every** photo, so
+`fingerprinted` is always 0 and no duplicate group ever forms (the app degrades gracefully to
+"no duplicates", it does not crash). This means the whole Duplicates category — including the
+full-screen viewer's swipe-to-compare and per-group delete — **can only be verified on a real
+device.** Blur, screenshots and large videos do work in the sim. (Confirmed 2026-09-27.)
+
+**You *can* grant photo access in the sim after all** — the earlier "manual tap only" note was
+about AppleScript. The **iOS Simulator control tool** (`mcp__Claude_Code_iOS_Simulator__control`)
+injects real touch events, so it can tap "Allow Full Access" on the system permission sheet and
+reach Home. `simctl addmedia` populates the library first. Note synthetic test images with hard
+edges / flat regions do **not** group as duplicates even when re-encoded (their feature-print
+distance exceeds 0.15) — but on the sim it's moot anyway, since Vision can't run there.
+
 ---
 
 ## Detection approach (all four implemented)
@@ -487,9 +502,14 @@ after each scan.
   - Thumbnails (`CandidateRow`, keeper row, Home grid) and Home's big library count now scale.
   **Verified in the simulator at AX1 and AX5** (Onboarding, Permission Primer) — info rows stack
   correctly, hero icons scale, button labels wrap, and the default text size is unchanged.
-  ⚠️ The **review screens** (`CandidateRow`, category cards, duplicate groups) are
-  **compile-verified only at accessibility sizes** — they sit behind photo authorization, which
-  cannot be granted in the simulator (see Simulator limitations). Check those on device.
+  **Update 2026-09-27:** photo access *can* now be granted in the sim (via the iOS Simulator
+  control tool — see Simulator limitations), so the **summary screen and its category cards were
+  verified at AX5**: content scrolls, cards stack and stay reachable, and the delete footer wraps
+  ("Tick the items you'd like to delete." — a `fixedSize` fix this session, it used to truncate).
+  Still **not** verified at AX sizes on device: `CandidateRow` and the **duplicate group cards**
+  (duplicates can't render in the sim at all — Vision won't run there). Check those on device.
+  Two grammar nits found in the same test and fixed: "1 items" → "1 item" (new `ICFormat.items`
+  helper, applied across summary/confirm/result/home/duplicates) and "1 copies … were" agreement.
 - **M6 — Edge cases: PARTIALLY DONE, compile-verified only.**
   - `CategoryReviewView` had **no empty state** — once a category emptied it showed a heading, a
     "Tick All" button and nothing else. It now shows a completion state, and the footer count

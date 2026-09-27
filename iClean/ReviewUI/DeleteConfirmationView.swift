@@ -17,7 +17,7 @@ struct DeleteConfirmationView: View {
                     .foregroundStyle(ICColor.destructive)
                     .accessibilityHidden(true)
 
-                Text("Delete \(ICFormat.count(viewModel.selectedCount)) items?")
+                Text("Delete \(ICFormat.items(viewModel.selectedCount))?")
                     .icStyle(.screenTitle)
                     .foregroundStyle(ICColor.primaryText)
                     .fixedSize(horizontal: false, vertical: true)

@@ -17,7 +17,7 @@ struct DeletionResultView: View {
                     .icStyle(.screenTitle)
                     .foregroundStyle(ICColor.primaryText)
 
-                Text("\(ICFormat.count(result.deletedCount)) items were moved to Recently Deleted, freeing up about \(ICFormat.fileSize(result.estimatedBytes)).")
+                Text("\(ICFormat.items(result.deletedCount)) \(result.deletedCount == 1 ? "was" : "were") moved to Recently Deleted, freeing up about \(ICFormat.fileSize(result.estimatedBytes)).")
                     .icStyle(.body)
                     .foregroundStyle(ICColor.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)

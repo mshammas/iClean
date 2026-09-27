@@ -8,6 +8,12 @@ enum ICFormat {
         value.formatted(.number.grouping(.automatic))
     }
 
+    /// A grouped count with the word "item" pluralized to match, e.g. `1 item`, `8,532 items`.
+    /// Use this rather than hand-writing `"\(count(n)) items"`, which reads "1 items" at one.
+    static func items(_ value: Int) -> String {
+        "\(count(value)) \(value == 1 ? "item" : "items")"
+    }
+
     /// A human file size, e.g. `6.2 GB`. Uses the file-size style users recognize
     /// from the Settings > Storage screens.
     static func fileSize(_ bytes: Int64) -> String {

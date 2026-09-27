@@ -76,7 +76,7 @@ struct HomeView: View {
                     .foregroundStyle(ICColor.primaryText)
                     .minimumScaleFactor(0.6)
                     .lineLimit(1)
-                    .accessibilityLabel("\(summary.totalCount) items in your library")
+                    .accessibilityLabel("\(ICFormat.items(summary.totalCount)) in your library")
                 Text("items in total")
                     .icStyle(.body)
                     .foregroundStyle(ICColor.secondaryText)
