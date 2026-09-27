@@ -871,7 +871,7 @@ scaffolding and a quality pass. Status as of 2026-09-27:
 - **Privacy policy** — `docs/privacy-policy.md`, honest "collects nothing, on-device only" policy.
   **Live via GitHub Pages (main branch, /docs folder) at
   https://mshammas.github.io/iClean/privacy-policy** — this is the URL for App Store Connect.
-  ⚠️ Still has a **placeholder contact email** in the body; editing the file and pushing
+  Contact email is filled in (mohammed.shammas@gmail.com). Editing the file and pushing
   re-publishes the page automatically.
 - **Unit test target** — `iCleanTests`, 29 tests, green via `xcodebuild test`. Covers the
   safety-critical pure logic (distance math, fp16 cache round-trip, selection dedup, threshold
@@ -880,8 +880,7 @@ scaffolding and a quality pass. Status as of 2026-09-27:
 **Outstanding — needs the user (money, hosting, a device, or App Store Connect):**
 - **Paid Apple Developer Program ($99/yr)** — required to submit at all; currently a free ID.
 - **Privacy policy is hosted** (GitHub Pages) at https://mshammas.github.io/iClean/privacy-policy
-  — put that URL in App Store Connect. **Fill the placeholder contact email** in
-  `docs/privacy-policy.md` and push (auto-republishes) before you rely on it publicly.
+  — put that URL in App Store Connect. (Contact email is filled in.)
 - **App Store Connect assets** — screenshots (6.9"/6.5"), description, keywords, support URL,
   age-rating questionnaire, and the App Privacy label answers (all "Data Not Collected").
 - **Device-verification debt** (see "Where to pick up" items 1–6): the reworked full-screen
